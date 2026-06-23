@@ -22,7 +22,7 @@ using namespace MoeDistributeDispatchV2A5Impl;
  * 第3位（百位）：是否做tp域allgather:
  *     0: 不做, 1: 做
  * 第4位（千位）：是否走fullmesh_v2模板:
- *     0: 不做, 1: 做
+ *     0: 不做, 1: 做, 2: 走hierarchy模板
  * 第5位（万位）: A2/A3/A5
  *     20000: A2, 30000: A3, 50000: A5
  */
@@ -149,5 +149,19 @@ extern "C" __global__ __aicore__ void moe_distribute_dispatch_v2(GM_ADDR x, GM_A
         return;
     }
 #endif
+    if (TILING_KEY_IS(32000)) {
+        GET_TILING_DATA_WITH_STRUCT(MoeDistributeDispatchV2TilingData, tilingData, tilingGM);
+        GM_ADDR contextGM0 = AscendC::GetHcclContext<HCCL_GROUP_ID_0>();
+        DataplaneMode dataplaneMode = GetDataplaneMode(contextGM0);
+        if (dataplaneMode == DataplaneMode::AIV) {
+            MoeDistributeDispatchV2Layered<DTYPE_X, DTYPE_EXPAND_X, false, false, false> op;
+            op.Init(x, expertIds, scales, expandXOut, dynamicScalesOut, assistInfoOut,
+                    expertTokenNumsOut, epSendCountsOut, workspaceGM, &pipe, tilingGM, contextGM0);
+            op.Process();
+        } else {
+            assert(false, "The driver version is too low and does not support layered mode.\n");
+        }
+        return;
+    }
 #endif
 }
