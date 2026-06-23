@@ -12,7 +12,6 @@ using namespace MoeDistributeDispatchA5CCUImpl;
 using namespace AscendC;
 using namespace MoeDistributeDispatchV2Impl;
 using namespace MoeDistributeDispatchV2A5Impl;
-
 /*
  * Tilingkey说明
  * 5位的十进制数

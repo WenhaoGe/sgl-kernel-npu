@@ -10,25 +10,25 @@ BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULA
  */
 
 /*!
- * \file moe_distribute_dispatch_a2_layered.h
+ * \file moe_distribute_dispatch_v2_layered.h
  * \brief
  */
 
-#ifndef MOE_DISTRIBUTE_DISPATCH_A2_LAYERED_H
-#define MOE_DISTRIBUTE_DISPATCH_A2_LAYERED_H
+#ifndef MOE_DISTRIBUTE_DISPATCH_V2_LAYERED_H
+#define MOE_DISTRIBUTE_DISPATCH_V2_LAYERED_H
 
 #include "kernel_operator.h"
 #include "kernel_tiling/kernel_tiling.h"
 #include "moe_distribute_dispatch_v2_tiling.h"
 #include "moe_distribute_base.h"
 
-namespace MoeDistributeDispatchA2Impl {
-#define TemplateMC2TypeA2layeredClass \
+namespace MoeDistributeDispatchV2Impl {
+#define TemplateMC2TypeV2layeredClass \
     typename XType, typename ExpandXOutType, bool StaticQuant, bool DynamicQuant, bool IsSmoothScaleExist
-#define TemplateMC2TypeA2layeredFunc XType, ExpandXOutType, StaticQuant, DynamicQuant, IsSmoothScaleExist
+#define TemplateMC2TypeV2layeredFunc XType, ExpandXOutType, StaticQuant, DynamicQuant, IsSmoothScaleExist
 
 using namespace AscendC;
-template <TemplateMC2TypeA2layeredClass>
+template <TemplateMC2TypeV2layeredClass>
 class MoeDistributeDispatchV2Layered
 {
 public:
@@ -39,6 +39,7 @@ public:
     constexpr static uint32_t B64_PER_BLOCK = 4;
     constexpr static uint32_t B16_PER_BLOCK = 16;
     constexpr static uint32_t UB_32B_ALIGN = 32;
+    constexpr static uint32_t BITS32_PER_BLOCK = UB_32B_ALIGN / 4;
     constexpr static uint32_t EXP_TOKEN_COUNT_FLAG_CNT = UB_32B_ALIGN / sizeof(int32_t);  // 8
     constexpr static uint32_t TBUF_SIZE = 190 * 1024;
     constexpr static uint32_t IPC_DATA_OFFSET = 4 * 1024 * 1024;
@@ -84,8 +85,8 @@ public:
     __aicore__ inline MoeDistributeDispatchV2Layered(){};
     __aicore__ inline void Init(GM_ADDR x, GM_ADDR expertIds, GM_ADDR scales, GM_ADDR expandXOut,
                                 GM_ADDR dynamicScalesOut, GM_ADDR expandIdxOut, GM_ADDR expertTokenNumsOut,
-                                GM_ADDR epRecvCountsOut, GM_ADDR workspaceGM, TPipe *pipe, GM_ADDR tilingGM,
-                                GM_ADDR contextGM0);
+                                GM_ADDR epRecvCountsOut, GM_ADDR workspaceGM, TPipe *pipe,
+                                const MoeDistributeDispatchV2TilingData tilingData);
     __aicore__ inline void Process();
 
 private:
@@ -218,11 +219,11 @@ private:
     __gm__ HcclOpResParam *winContext_{nullptr};
 };
 
-template <TemplateMC2TypeA2layeredClass>
-__aicore__ inline void MoeDistributeDispatchV2Layered<TemplateMC2TypeA2layeredFunc>::Init(
+template <TemplateMC2TypeV2layeredClass>
+__aicore__ inline void MoeDistributeDispatchV2Layered<TemplateMC2TypeV2layeredFunc>::Init(
     GM_ADDR x, GM_ADDR expertIds, GM_ADDR scales, GM_ADDR expandXOut, GM_ADDR dynamicScalesOut, GM_ADDR expandIdxOut,
     GM_ADDR expertTokenNumsOut, GM_ADDR epRecvCountsOut, GM_ADDR workspaceGM, TPipe *pipe,
-    const MoeDistributeDispatchV2TilingData *tilingData)
+    const MoeDistributeDispatchV2TilingData tilingData)
 {
     tpipe_ = pipe;
 
@@ -375,8 +376,8 @@ __aicore__ inline void MoeDistributeDispatchV2Layered<TemplateMC2TypeA2layeredFu
     PipeBarrier<PIPE_ALL>();
 }
 
-template <TemplateMC2TypeA2layeredClass>
-__aicore__ inline void MoeDistributeDispatchV2Layered<TemplateMC2TypeA2layeredFunc>::AIVRDMAPostSend(
+template <TemplateMC2TypeV2layeredClass>
+__aicore__ inline void MoeDistributeDispatchV2Layered<TemplateMC2TypeV2layeredFunc>::AIVRDMAPostSend(
     GM_ADDR srcDmaAddr, GM_ADDR destDmaAddr, uint64_t destRankId, uint64_t messageLen, __gm__ HcclAiRMAInfo *QpInfo)
 {
     auto qpNum = ((__gm__ HcclAiRMAInfo *)QpInfo)->qpNum;
@@ -469,9 +470,9 @@ __aicore__ inline void MoeDistributeDispatchV2Layered<TemplateMC2TypeA2layeredFu
     PipeBarrier<PIPE_ALL>();
 }
 
-template <TemplateMC2TypeA2layeredClass>
+template <TemplateMC2TypeV2layeredClass>
 __aicore__ inline void
-MoeDistributeDispatchV2Layered<TemplateMC2TypeA2layeredFunc>::CreateInnerReduceInfo(uint32_t serverIdx)
+MoeDistributeDispatchV2Layered<TemplateMC2TypeV2layeredFunc>::CreateInnerReduceInfo(uint32_t serverIdx)
 {
     // serverNum个Core加入本函数
     uint32_t curServerId = serverIdx;
@@ -630,8 +631,8 @@ MoeDistributeDispatchV2Layered<TemplateMC2TypeA2layeredFunc>::CreateInnerReduceI
     PipeBarrier<PIPE_ALL>();
 }
 
-template <TemplateMC2TypeA2layeredClass>
-__aicore__ inline void MoeDistributeDispatchV2Layered<TemplateMC2TypeA2layeredFunc>::CreateOuterReduceInfo()
+template <TemplateMC2TypeV2layeredClass>
+__aicore__ inline void MoeDistributeDispatchV2Layered<TemplateMC2TypeV2layeredFunc>::CreateOuterReduceInfo()
 {
     // 仅一个核进去该逻辑
     uint32_t baseBuffOffset = TBUF_TEMP_OFFSET;
@@ -764,8 +765,8 @@ __aicore__ inline void MoeDistributeDispatchV2Layered<TemplateMC2TypeA2layeredFu
     PipeBarrier<PIPE_ALL>();
 }
 
-template <TemplateMC2TypeA2layeredClass>
-__aicore__ inline void MoeDistributeDispatchV2Layered<TemplateMC2TypeA2layeredFunc>::ReorderTokens()
+template <TemplateMC2TypeV2layeredClass>
+__aicore__ inline void MoeDistributeDispatchV2Layered<TemplateMC2TypeV2layeredFunc>::ReorderTokens()
 {
     uint32_t sendTokenNum = axisBS_ / aivNum_;
     uint32_t remainderTokenNum = axisBS_ % aivNum_;
@@ -875,8 +876,8 @@ __aicore__ inline void MoeDistributeDispatchV2Layered<TemplateMC2TypeA2layeredFu
     }
 }
 
-template <TemplateMC2TypeA2layeredClass>
-__aicore__ inline void MoeDistributeDispatchV2Layered<TemplateMC2TypeA2layeredFunc>::QuantProcess(
+template <TemplateMC2TypeV2layeredClass>
+__aicore__ inline void MoeDistributeDispatchV2Layered<TemplateMC2TypeV2layeredFunc>::QuantProcess(
     uint32_t sendTokenNum, LocalTensor<XType> xTokenLt, LocalTensor<float> tokenCastLt)
 {
     constexpr uint32_t maxArrUbOffset = 6 * 1024;
@@ -938,9 +939,9 @@ __aicore__ inline void MoeDistributeDispatchV2Layered<TemplateMC2TypeA2layeredFu
     }
 }
 
-template <TemplateMC2TypeA2layeredClass>
+template <TemplateMC2TypeV2layeredClass>
 __aicore__ inline void
-MoeDistributeDispatchV2Layered<TemplateMC2TypeA2layeredFunc>::SendDataToServer(uint32_t destServerId)
+MoeDistributeDispatchV2Layered<TemplateMC2TypeV2layeredFunc>::SendDataToServer(uint32_t destServerId)
 {
     uint32_t dstRankId =
         rankId_ % SERVER_RANK_SIZE + destServerId * SERVER_RANK_SIZE;  // 根据自己的rank计算其他节点的同号rank
@@ -974,14 +975,14 @@ MoeDistributeDispatchV2Layered<TemplateMC2TypeA2layeredFunc>::SendDataToServer(u
     PipeBarrier<PIPE_ALL>();
 }
 
-template <TemplateMC2TypeA2layeredClass>
-__aicore__ inline uint32_t MoeDistributeDispatchV2Layered<TemplateMC2TypeA2layeredFunc>::GetExpRank(uint32_t expertId)
+template <TemplateMC2TypeV2layeredClass>
+__aicore__ inline uint32_t MoeDistributeDispatchV2Layered<TemplateMC2TypeV2layeredFunc>::GetExpRank(uint32_t expertId)
 {
     return expertId / localMoeExpertNum_;
 }
 
-template <TemplateMC2TypeA2layeredClass>
-__aicore__ inline void MoeDistributeDispatchV2Layered<TemplateMC2TypeA2layeredFunc>::SetIpcFlag(int32_t flagVal)
+template <TemplateMC2TypeV2layeredClass>
+__aicore__ inline void MoeDistributeDispatchV2Layered<TemplateMC2TypeV2layeredFunc>::SetIpcFlag(int32_t flagVal)
 {
     if (aivId_ >= SERVER_RANK_SIZE) {
         return;
@@ -999,8 +1000,8 @@ __aicore__ inline void MoeDistributeDispatchV2Layered<TemplateMC2TypeA2layeredFu
     PipeBarrier<PIPE_ALL>();
 }
 
-template <TemplateMC2TypeA2layeredClass>
-__aicore__ inline void MoeDistributeDispatchV2Layered<TemplateMC2TypeA2layeredFunc>::WaitIpcFlag(int32_t flagVal)
+template <TemplateMC2TypeV2layeredClass>
+__aicore__ inline void MoeDistributeDispatchV2Layered<TemplateMC2TypeV2layeredFunc>::WaitIpcFlag(int32_t flagVal)
 {
     uint64_t waitVal = magicVal_;
     if (aivId_ >= SERVER_RANK_SIZE) {
@@ -1025,8 +1026,8 @@ __aicore__ inline void MoeDistributeDispatchV2Layered<TemplateMC2TypeA2layeredFu
     } while (isSync);
 }
 
-template <TemplateMC2TypeA2layeredClass>
-__aicore__ inline uint32_t MoeDistributeDispatchV2Layered<TemplateMC2TypeA2layeredFunc>::GetArrivedTokenInfo(
+template <TemplateMC2TypeV2layeredClass>
+__aicore__ inline uint32_t MoeDistributeDispatchV2Layered<TemplateMC2TypeV2layeredFunc>::GetArrivedTokenInfo(
     uint32_t serverIdx, uint32_t tokenIdx, bool justExpInfo, LocalTensor<uint8_t> localUB_U8)
 {
     GlobalTensor<uint64_t> TokenFlagGtU64;
@@ -1084,8 +1085,8 @@ __aicore__ inline uint32_t MoeDistributeDispatchV2Layered<TemplateMC2TypeA2layer
     }
 }
 
-template <TemplateMC2TypeA2layeredClass>
-__aicore__ inline uint32_t MoeDistributeDispatchV2Layered<TemplateMC2TypeA2layeredFunc>::GetSelfServerTokenInfo(
+template <TemplateMC2TypeV2layeredClass>
+__aicore__ inline uint32_t MoeDistributeDispatchV2Layered<TemplateMC2TypeV2layeredFunc>::GetSelfServerTokenInfo(
     uint32_t tokenIdx, bool justExpInfo, LocalTensor<uint8_t> localUB_U8)
 {
     if (tokenIdx >= axisBS_) {
@@ -1115,8 +1116,8 @@ __aicore__ inline uint32_t MoeDistributeDispatchV2Layered<TemplateMC2TypeA2layer
     }
 }
 
-template <TemplateMC2TypeA2layeredClass>
-__aicore__ inline void MoeDistributeDispatchV2Layered<TemplateMC2TypeA2layeredFunc>::Win2Ipc()
+template <TemplateMC2TypeV2layeredClass>
+__aicore__ inline void MoeDistributeDispatchV2Layered<TemplateMC2TypeV2layeredFunc>::Win2Ipc()
 {
     uint32_t coresPerServer = (aivNum_ - serverNum - 1) / serverNum;
     uint32_t logicAivId = aivId_ - serverNum - 1;
@@ -1221,8 +1222,8 @@ __aicore__ inline void MoeDistributeDispatchV2Layered<TemplateMC2TypeA2layeredFu
     PipeBarrier<PIPE_ALL>();
 }
 
-template <TemplateMC2TypeA2layeredClass>
-__aicore__ inline void MoeDistributeDispatchV2Layered<TemplateMC2TypeA2layeredFunc>::Ipc2Out()
+template <TemplateMC2TypeV2layeredClass>
+__aicore__ inline void MoeDistributeDispatchV2Layered<TemplateMC2TypeV2layeredFunc>::Ipc2Out()
 {
     uint32_t coresPerExp = aivNum_ / localMoeExpertNum_;
     if (aivId_ >= coresPerExp * localMoeExpertNum_) {
@@ -1354,8 +1355,8 @@ __aicore__ inline void MoeDistributeDispatchV2Layered<TemplateMC2TypeA2layeredFu
     }
 }
 
-template <TemplateMC2TypeA2layeredClass>
-__aicore__ inline void MoeDistributeDispatchV2Layered<TemplateMC2TypeA2layeredFunc>::CleanUp()
+template <TemplateMC2TypeV2layeredClass>
+__aicore__ inline void MoeDistributeDispatchV2Layered<TemplateMC2TypeV2layeredFunc>::CleanUp()
 {
     if (aivId_ == 0) {
         bufferChosenGlobal_(0) = bufferId_ ^ 1;
@@ -1385,8 +1386,8 @@ __aicore__ inline void MoeDistributeDispatchV2Layered<TemplateMC2TypeA2layeredFu
     PipeBarrier<PIPE_ALL>();
 }
 
-template <TemplateMC2TypeA2layeredClass>
-__aicore__ inline void MoeDistributeDispatchV2Layered<TemplateMC2TypeA2layeredFunc>::Process()
+template <TemplateMC2TypeV2layeredClass>
+__aicore__ inline void MoeDistributeDispatchV2Layered<TemplateMC2TypeV2layeredFunc>::Process()
 {
     if ASCEND_IS_AIV {    // 全aiv处理
         ReorderTokens();  // 前axisBS_个核处理，重排token，将tokenStruct放在一起，计算token索引，以及每个token要发给哪些server
