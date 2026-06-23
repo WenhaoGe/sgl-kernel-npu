@@ -3,6 +3,7 @@
 #include "moe_distribute_dispatch_v2_tiling.h"
 #include "moe_distribute_dispatch_tiling.h"
 #include "moe_distribute_dispatch_v2_a5.h"
+#include "moe_distrubute_dispatch_v2_layout.h"
 #ifdef __DAV_C310__
 #include "moe_distribute_dispatch_v2_ccu.h"
 using namespace MoeDistributeDispatchA5CCUImpl;
@@ -156,7 +157,7 @@ extern "C" __global__ __aicore__ void moe_distribute_dispatch_v2(GM_ADDR x, GM_A
         if (dataplaneMode == DataplaneMode::AIV) {
             MoeDistributeDispatchV2Layered<DTYPE_X, DTYPE_EXPAND_X, false, false, false> op;
             op.Init(x, expertIds, scales, expandXOut, dynamicScalesOut, assistInfoOut,
-                    expertTokenNumsOut, epSendCountsOut, workspaceGM, &pipe, tilingGM, contextGM0);
+                    expertTokenNumsOut, epSendCountsOut, workspaceGM, &pipe, tilingData);
             op.Process();
         } else {
             assert(false, "The driver version is too low and does not support layered mode.\n");

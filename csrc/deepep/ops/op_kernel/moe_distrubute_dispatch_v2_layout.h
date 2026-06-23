@@ -35,7 +35,7 @@ public:
     constexpr static uint32_t STATE_OFFSET = 512;                 // 状态空间偏移地址
     constexpr static uint32_t STATUS_SIZE_LAYERED = 1024 * 1024;  // 1M
     constexpr static uint32_t RDMA_BUFFER_ALIGN = 4 * 1024;
-    constexpr static uint32_t SERVER_RANK_SIZE = 8;
+    constexpr static uint32_t SERVER_RANK_SIZE = 16;
     constexpr static uint32_t B64_PER_BLOCK = 4;
     constexpr static uint32_t B16_PER_BLOCK = 16;
     constexpr static uint32_t UB_32B_ALIGN = 32;
@@ -108,6 +108,22 @@ private:
                                            uint64_t messageLen, __gm__ HcclAiRMAInfo *QpInfo);
     __aicore__ inline uint32_t GetSelfServerTokenInfo(uint32_t tokenIdx, bool justExpInfo,
                                                       LocalTensor<uint8_t> localUB_U8);
+    __aicore__ inline GM_ADDR GetWindowInAddrByRankId(const int32_t rankId)
+    {
+        uint32_t curRankId = rankId_;
+        if (curRankId == rankId) {
+            return (GM_ADDR)(winContext_->localWindowsIn);
+        }
+        return (GM_ADDR)(((HcclRankRelationResV2*)(winContext_->remoteRes[rankId].nextDevicePtr))->windowsIn);
+    }
+    __aicore__ inline GM_ADDR GetWindowOutAddrByRankId(const int32_t rankId)
+    {
+        uint32_t curRankId = rankId_;
+        if (curRankId == rankId) {
+            return (GM_ADDR)(winContext_->localWindowsOut);
+        }
+        return (GM_ADDR)(((HcclRankRelationResV2*)(winContext_->remoteRes[rankId].nextDevicePtr))->windowsOut);
+    }
 
     TPipe *tpipe_{nullptr};
     GlobalTensor<int32_t> expertIdsGMTensor_;
@@ -199,29 +215,23 @@ private:
     uint64_t combineOuterCntIndexOffset;
     uint64_t combineOuterCntPerServerOffset;
 
-    Hccl<HCCL_SERVER_TYPE_AICPU> hccl_;
-    __gm__ HcclA2CombineOpParam *winContext_{nullptr};
+    __gm__ HcclOpResParam *winContext_{nullptr};
 };
 
 template <TemplateMC2TypeA2layeredClass>
 __aicore__ inline void MoeDistributeDispatchV2Layered<TemplateMC2TypeA2layeredFunc>::Init(
     GM_ADDR x, GM_ADDR expertIds, GM_ADDR scales, GM_ADDR expandXOut, GM_ADDR dynamicScalesOut, GM_ADDR expandIdxOut,
-    GM_ADDR expertTokenNumsOut, GM_ADDR epRecvCountsOut, GM_ADDR workspaceGM, TPipe *pipe, GM_ADDR tilingGM,
-    GM_ADDR contextGM0)
+    GM_ADDR expertTokenNumsOut, GM_ADDR epRecvCountsOut, GM_ADDR workspaceGM, TPipe *pipe,
+    const MoeDistributeDispatchV2TilingData *tilingData)
 {
     tpipe_ = pipe;
-    REGISTER_TILING_DEFAULT(MoeDistributeDispatchV2TilingData);
-    GET_TILING_DATA_WITH_STRUCT(MoeDistributeDispatchV2TilingData, tilingData, tilingGM);
 
-    hccl_.InitV2(contextGM0, &tilingData);
-    hccl_.SetCcTilingV2(offsetof(MoeDistributeDispatchV2TilingData, mc2CcTiling));
-
-    winContext_ = (__gm__ HcclA2CombineOpParam *)contextGM0;
+    winContext_ = (__gm__ HcclOpResParam *)AscendC::GetHcclContext<HCCL_GROUP_ID_0>();
     rankId_ = tilingData.moeDistributeDispatchV2Info.epRankId;
     serverId_ = rankId_ / SERVER_RANK_SIZE;
-    windowInGM_ = hccl_.GetWindowsInAddr(rankId_);
-    windowOutGM_ = hccl_.GetWindowsOutAddr(rankId_);
-    qp_info_ = (__gm__ HcclAiRMAInfo *)(((__gm__ HcclA2CombineOpParam *)contextGM0)->aiRMAInfo);
+    windowInGM_ = GetWindowInAddrByRankId(rankId_);
+    windowOutGM_ = GetWindowOutAddrByRankId(rankId_);
+    qp_info_ = (__gm__ HcclAiRMAInfo *)(winContext_->aiRMAInfo);
 
     axisBS_ = tilingData.moeDistributeDispatchV2Info.bs;
     globalBs_ = tilingData.moeDistributeDispatchV2Info.globalBs;
@@ -269,7 +279,7 @@ __aicore__ inline void MoeDistributeDispatchV2Layered<TemplateMC2TypeA2layeredFu
     // IPC buffer init
     for (int i = 0; i < SERVER_RANK_SIZE; i++) {
         shareAddrs[i] = (__gm__ uint8_t *)(reinterpret_cast<uint64_t>(
-            hccl_.GetWindowsInAddr(rankId_ / SERVER_RANK_SIZE * SERVER_RANK_SIZE + i) + shareMemOffset_));
+            GetWindowInAddrByRankId(rankId_ / SERVER_RANK_SIZE * SERVER_RANK_SIZE + i) + shareMemOffset_));
     }
     SERVER_SIZE_ON_WIN = WIN_SIZE / serverNum;
     SERVER_SIZE_ON_WIN = (SERVER_SIZE_ON_WIN / RDMA_BUFFER_ALIGN) * RDMA_BUFFER_ALIGN;
@@ -937,9 +947,9 @@ MoeDistributeDispatchV2Layered<TemplateMC2TypeA2layeredFunc>::SendDataToServer(u
     uint64_t destServerMask = (1UL << destServerId);
 
     // 根据BufferID选择对应WindowBuffer -> 根据对应本机的Server选择Dst对应预留区域
-    uint64_t dstRdmaAddr = (uint64_t)(hccl_.GetWindowsInAddr(dstRankId) + (halfWinSize_ * bufferId_ * 1UL) +
+    uint64_t dstRdmaAddr = (uint64_t)(GetWindowInAddrByRankId(dstRankId) + (halfWinSize_ * bufferId_ * 1UL) +
                                       (serverId_ * SERVER_SIZE_ON_WIN * 1UL));
-    uint64_t srcRdmaAddrBase = (uint64_t)(hccl_.GetWindowsOutAddr(rankId_) + (halfWinSize_ * bufferId_ * 1UL));
+    uint64_t srcRdmaAddrBase = (uint64_t)(GetWindowOutAddrByRankId(rankId_) + (halfWinSize_ * bufferId_ * 1UL));
     LocalTensor<uint64_t> sendTokenInfoLocalTensor =
         tBuf.GetWithOffset<uint64_t>((axisBS_ * FLAG_SIZE) / sizeof(uint64_t), 0);
     DataCopy(sendTokenInfoLocalTensor, tokenAddrFlagStructGlobalU64Tensor_, (axisBS_ * FLAG_SIZE) / sizeof(uint64_t));
@@ -959,7 +969,7 @@ MoeDistributeDispatchV2Layered<TemplateMC2TypeA2layeredFunc>::SendDataToServer(u
     // 发送完成标志到 dstServer
     uint64_t srcFlagRdmaAddr = (uint64_t)(sendStatusTensor_.GetPhyAddr());
     uint64_t dstFlagRdmaAddr =
-        (uint64_t)(hccl_.GetWindowsInAddr(dstRankId) + halfWinSize_ * bufferId_ + WIN_SIZE + serverId_ * STATE_OFFSET);
+        (uint64_t)(GetWindowInAddrByRankId(dstRankId) + halfWinSize_ * bufferId_ + WIN_SIZE + serverId_ * STATE_OFFSET);
     AIVRDMAPostSend((GM_ADDR)srcFlagRdmaAddr, (GM_ADDR)dstFlagRdmaAddr, dstRankId, FLAG_SIZE, qp_info_);
     PipeBarrier<PIPE_ALL>();
 }
@@ -1407,7 +1417,6 @@ __aicore__ inline void MoeDistributeDispatchV2Layered<TemplateMC2TypeA2layeredFu
 
         PipeBarrier<PIPE_ALL>();
         SyncAll<true>();
-        hccl_.Finalize();
     }
 }
 }  // namespace MoeDistributeDispatchA2Impl
