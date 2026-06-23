@@ -153,6 +153,7 @@ extern "C" __global__ __aicore__ void moe_distribute_dispatch_v2(GM_ADDR x, GM_A
         GET_TILING_DATA_WITH_STRUCT(MoeDistributeDispatchV2TilingData, tilingData, tilingGM);
         GM_ADDR contextGM0 = AscendC::GetHcclContext<HCCL_GROUP_ID_0>();
         DataplaneMode dataplaneMode = GetDataplaneMode(contextGM0);
+        printf("=============moe_distribute_dispatch_v2===========\n");
         if (dataplaneMode == DataplaneMode::AIV) {
             MoeDistributeDispatchV2Layered<DTYPE_X, DTYPE_EXPAND_X, false, false, false> op;
             op.Init(x, expertIds, scales, expandXOut, dynamicScalesOut, assistInfoOut,

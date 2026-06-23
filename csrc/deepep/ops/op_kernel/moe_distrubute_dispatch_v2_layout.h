@@ -23,6 +23,7 @@ BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULA
 #include "moe_distribute_base.h"
 
 namespace MoeDistributeDispatchV2Impl {
+constexpr uint64_t MB_SIZE = 1024 * 1024;
 #define TemplateMC2TypeV2layeredClass \
     typename XType, typename ExpandXOutType, bool StaticQuant, bool DynamicQuant, bool IsSmoothScaleExist
 #define TemplateMC2TypeV2layeredFunc XType, ExpandXOutType, StaticQuant, DynamicQuant, IsSmoothScaleExist
@@ -130,7 +131,6 @@ private:
     GlobalTensor<int32_t> expertIdsGMTensor_;
     GlobalTensor<ExpandXOutType> expandXOutGMTensor_;
     GlobalTensor<float> dynamicScalesOutGMTensor_;
-    // GlobalTensor<float> weightsOutGt;
     GlobalTensor<uint64_t> sendStatusTensor_;
     GlobalTensor<uint8_t> sendTokensU8Tensor_;
     GlobalTensor<uint32_t> bufferChosenGlobal_;
@@ -226,6 +226,7 @@ __aicore__ inline void MoeDistributeDispatchV2Layered<TemplateMC2TypeV2layeredFu
     const MoeDistributeDispatchV2TilingData tilingData)
 {
     tpipe_ = pipe;
+    printf("========MoeDistributeDispatchV2Layered==========\n");
 
     winContext_ = (__gm__ HcclOpResParam *)AscendC::GetHcclContext<HCCL_GROUP_ID_0>();
     rankId_ = tilingData.moeDistributeDispatchV2Info.epRankId;
@@ -259,13 +260,13 @@ __aicore__ inline void MoeDistributeDispatchV2Layered<TemplateMC2TypeV2layeredFu
     assert(winContext_->winSize >= winSizeMin,
            "The HCCL_BUFFSIZE is %lluMB, the min value should be %lluMB. \
         epWorldSize:%u, epRankId:%u, moeExpertNum:%u, quantMode:%u, globalBs:%u, bs:%u, k:%u, h:%u, aivNum:%u, \
-        isQuant:%d, totalUbSize:%llu, expertTokenNumsType:%u\n",
+        totalUbSize:%llu, expertTokenNumsType:%u\n",
            winContext_->winSize / MB_SIZE, winSizeMin / MB_SIZE, tilingData.moeDistributeDispatchV2Info.epWorldSize,
            tilingData.moeDistributeDispatchV2Info.epRankId, tilingData.moeDistributeDispatchV2Info.moeExpertNum,
            tilingData.moeDistributeDispatchV2Info.quantMode, tilingData.moeDistributeDispatchV2Info.globalBs,
            tilingData.moeDistributeDispatchV2Info.bs, tilingData.moeDistributeDispatchV2Info.k,
            tilingData.moeDistributeDispatchV2Info.h, tilingData.moeDistributeDispatchV2Info.aivNum,
-           tilingData.moeDistributeDispatchV2Info.isQuant, tilingData.moeDistributeDispatchV2Info.totalUbSize,
+           tilingData.moeDistributeDispatchV2Info.totalUbSize,
            tilingData.moeDistributeDispatchV2Info.expertTokenNumsType);
 
     // RDMA buffer init
