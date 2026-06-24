@@ -83,7 +83,7 @@ extern "C" __global__ __aicore__ void moe_distribute_combine_v2(
         auto contextGM0 = AscendC::GetHcclContext<HCCL_GROUP_ID_0>();
         DataplaneMode dataplaneMode = GetDataplaneMode(contextGM0);
         if (dataplaneMode == DataplaneMode::AIV) {
-            MoeDistributeCombineA2Impl<DTYPE_EXPAND_X, int32_t, DTYPE_EXPAND_X> op;
+            MoeDistributeCombineA2Impl::MoeDistributeCombineV2Layered<DTYPE_EXPAND_X, int32_t, DTYPE_EXPAND_X> op;
             op.Init(expandX, expertIds, assistInfoForCombine, epSendCount, scales, XOut, workspaceGM, &pipe, tilingGM,
                     contextGM0);
             op.Process();
