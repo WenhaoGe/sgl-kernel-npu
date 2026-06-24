@@ -360,7 +360,7 @@ __aicore__ inline void MoeDistributeCombineV2Layered<TemplateMC2TypeA2layeredFun
 template <TemplateMC2TypeA2layeredClass>
 __aicore__ inline void MoeDistributeCombineV2Layered<TemplateMC2TypeA2layeredFunc>::Init(
     GM_ADDR expandX, GM_ADDR expertIds, GM_ADDR expandIdx, GM_ADDR sendCount, GM_ADDR scales, GM_ADDR XOut,
-    GM_ADDR workspaceGM, TPipe *pipe, GM_ADDR tiling, GM_ADDR contextGM)
+    GM_ADDR workspaceGM, TPipe *pipe, GM_ADDR tiling, const MoeDistributeCombineV2TilingData tilingData)
 {
     tpipe_ = pipe;
     REGISTER_TILING_DEFAULT(MoeDistributeCombineV2TilingData);
