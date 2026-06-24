@@ -1164,7 +1164,9 @@ static ge::graphStatus MoeDistributeCombineA3TilingFuncImpl(gert::TilingContext 
         tilingKey = TILING_KEY_A2_TYPE;
     }
     CalTilingKey(tilingKey, tpWorldSize, commQuantMode);
-    
+    if (strcmp(commAlgPtr, "hierarchy") == 0) {
+        tilingKey += TILINGKEY_COMM_ALG_LAYOUT;
+    }
     OP_LOGD(nodeName, "tilingKey is %lu", tilingKey);
     context->SetTilingKey(tilingKey);
 
