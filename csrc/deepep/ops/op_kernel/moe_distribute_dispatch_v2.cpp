@@ -61,6 +61,21 @@ extern "C" __global__ __aicore__ void moe_distribute_dispatch_v2(GM_ADDR x, GM_A
         op.Process();
         return;
     }
+    if (TILING_KEY_IS(32000)) {
+        GET_TILING_DATA_WITH_STRUCT(MoeDistributeDispatchV2TilingData, tilingData, tilingGM);
+        GM_ADDR contextGM0 = AscendC::GetHcclContext<HCCL_GROUP_ID_0>();
+        DataplaneMode dataplaneMode = GetDataplaneMode(contextGM0);
+        printf("=============moe_distribute_dispatch_v2===========\n");
+        if (dataplaneMode == DataplaneMode::AIV) {
+            MoeDistributeDispatchV2Layered<DTYPE_X, DTYPE_EXPAND_X, false, false, false> op;
+            op.Init(x, expertIds, scales, expandXOut, dynamicScalesOut, assistInfoOut,
+                    expertTokenNumsOut, epSendCountsOut, workspaceGM, &pipe, tilingData);
+            op.Process();
+        } else {
+            assert(false, "The driver version is too low and does not support layered mode.\n");
+        }
+        return;
+    }
 #ifdef __DAV_C310__
     if (TILING_KEY_IS(60000)) {
         GET_TILING_DATA_WITH_STRUCT(MoeDistributeDispatchV2TilingData, tilingData, tilingGM);
@@ -149,20 +164,5 @@ extern "C" __global__ __aicore__ void moe_distribute_dispatch_v2(GM_ADDR x, GM_A
         return;
     }
 #endif
-    if (TILING_KEY_IS(32000)) {
-        GET_TILING_DATA_WITH_STRUCT(MoeDistributeDispatchV2TilingData, tilingData, tilingGM);
-        GM_ADDR contextGM0 = AscendC::GetHcclContext<HCCL_GROUP_ID_0>();
-        DataplaneMode dataplaneMode = GetDataplaneMode(contextGM0);
-        printf("=============moe_distribute_dispatch_v2===========\n");
-        if (dataplaneMode == DataplaneMode::AIV) {
-            MoeDistributeDispatchV2Layered<DTYPE_X, DTYPE_EXPAND_X, false, false, false> op;
-            op.Init(x, expertIds, scales, expandXOut, dynamicScalesOut, assistInfoOut,
-                    expertTokenNumsOut, epSendCountsOut, workspaceGM, &pipe, tilingData);
-            op.Process();
-        } else {
-            assert(false, "The driver version is too low and does not support layered mode.\n");
-        }
-        return;
-    }
 #endif
 }
