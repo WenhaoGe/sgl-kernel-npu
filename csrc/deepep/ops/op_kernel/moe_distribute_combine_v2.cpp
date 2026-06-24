@@ -82,14 +82,10 @@ extern "C" __global__ __aicore__ void moe_distribute_combine_v2(
     } else if (TILING_KEY_IS(32000)) {
         auto contextGM0 = AscendC::GetHcclContext<HCCL_GROUP_ID_0>();
         DataplaneMode dataplaneMode = GetDataplaneMode(contextGM0);
-        if (dataplaneMode == DataplaneMode::AIV) {
-            MoeDistributeCombineA2Impl::MoeDistributeCombineV2Layered<DTYPE_EXPAND_X, int32_t, DTYPE_EXPAND_X> op;
-            op.Init(expandX, expertIds, assistInfoForCombine, epSendCount, scales, XOut, workspaceGM, &pipe, tilingGM,
-                    contextGM0);
-            op.Process();
-        } else {
-            assert(false, "The driver version is too low and does not support layered mode.\n");
-        }
+        MoeDistributeCombineA2Impl::MoeDistributeCombineV2Layered<DTYPE_EXPAND_X, int32_t, DTYPE_EXPAND_X> op;
+        op.Init(expandX, expertIds, assistInfoForCombine, epSendCount, scales, XOut, workspaceGM, &pipe, tilingGM,
+            tilingData);
+        op.Process();
     }
 #ifdef __DAV_C310__
     if (TILING_KEY_IS(60000)) {

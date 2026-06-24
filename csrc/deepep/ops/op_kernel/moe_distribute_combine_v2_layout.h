@@ -107,7 +107,7 @@ public:
     __aicore__ inline MoeDistributeCombineV2Layered(){};
     __aicore__ inline void Init(GM_ADDR expandX, GM_ADDR expertIds, GM_ADDR expandIdx, GM_ADDR sendCount,
                                 GM_ADDR scales, GM_ADDR XOut, GM_ADDR workspaceGM, TPipe *pipe, GM_ADDR tiling,
-                                GM_ADDR contextGM);
+                                const MoeDistributeDispatchV2TilingData tilingData);
     __aicore__ inline void Process();
     __aicore__ inline void AIVRDMAPostSend(GM_ADDR srcDmaAddr, GM_ADDR destDmaAddr, uint64_t destRankId,
                                            uint64_t messageLen, __gm__ HcclAiRMAInfo *QpInfo);
@@ -187,13 +187,12 @@ private:
     uint32_t rankId_{0};
     uint32_t coreIdx_{0};              // aiv id
     uint32_t sharedExpertRankNum_{0};  // 共享专家卡数
-    __gm__ HcclA2CombineOpParam *winContext_{nullptr};
+    __gm__ HcclOpResParam *winContext_{nullptr};
     uint32_t moeExpertNum_{0};  // moe专家数, 等于worldSize_ - 共享专家卡数
     uint32_t moeExpertNumInServer_{0};
     uint32_t localMoeExpertNum_{0};  // 每张卡的专家数
     uint32_t expandXRows_;
     uint64_t rankSizeOnWin_{0};
-    Hccl<HCCL_SERVER_TYPE_AICPU> hccl_;
     uint64_t dataOffsetOnWin_{0};
     uint64_t stateOffsetOnWin_{0};
     uint32_t axisHFloatSize_{0};
@@ -246,6 +245,22 @@ private:
     uint32_t scaleNumAlign;
     uint32_t SCALE_GRANU;
     uint32_t lastRepeatNum{0};
+    __aicore__ inline GM_ADDR GetWindowInAddrByRankId(const int32_t rankId)
+    {
+        uint32_t curRankId = rankId_;
+        if (curRankId == rankId) {
+            return (GM_ADDR)(winContext_->localWindowsIn);
+        }
+        return (GM_ADDR)(((HcclRankRelationResV2*)(winContext_->remoteRes[rankId].nextDevicePtr))->windowsIn);
+    }
+    __aicore__ inline GM_ADDR GetWindowOutAddrByRankId(const int32_t rankId)
+    {
+        uint32_t curRankId = rankId_;
+        if (curRankId == rankId) {
+            return (GM_ADDR)(winContext_->localWindowsOut);
+        }
+        return (GM_ADDR)(((HcclRankRelationResV2*)(winContext_->remoteRes[rankId].nextDevicePtr))->windowsOut);
+    }
 };
 
 template <TemplateMC2TypeA2layeredClass>
@@ -397,19 +412,18 @@ __aicore__ inline void MoeDistributeCombineV2Layered<TemplateMC2TypeA2layeredFun
     }
     scaleMulVal = 1 / 127.;
 
-    winContext_ = (__gm__ HcclA2CombineOpParam *)contextGM;
-    hccl_.InitV2(contextGM, &tilingData);
-    hccl_.SetCcTilingV2(offsetof(MoeDistributeCombineV2TilingData, mc2CcTiling));
-    qp_info_ = (__gm__ HcclAiRMAInfo *)(((__gm__ HcclA2CombineOpParam *)contextGM)->aiRMAInfo);
+    winContext_ = (__gm__ HcclOpResParam *)AscendC::GetHcclContext<HCCL_GROUP_ID_0>();
+    qp_info_ = (__gm__ HcclAiRMAInfo *)(winContext_->aiRMAInfo);
 
     halfWinSize_ = RDMA_DATA_SIZE / 2U;
     IPC_DATA_SIZE = winContext_->winSize - RDMA_DATA_SIZE - IPC_DATA_OFFSET - NOTIFY_DATA_SIZE;
     dataSpaceSize_ = halfWinSize_ - STATE_SPACE_SIZE;
-    windowInGM_ = hccl_.GetWindowsInAddr(rankId_);
+    windowInGM_ = GetWindowInAddrByRankId(rankId_);
     bufferIdGlobal_.SetGlobalBuffer((__gm__ uint32_t *)(windowInGM_ + dataSpaceSize_ + worldSize_ * STATE_OFFSET));
     bufferId_ = bufferIdGlobal_(0);
     windowInGM_ = windowInGM_ + halfWinSize_ * bufferId_;
-    windowOutGM_ = hccl_.GetWindowsOutAddr(rankId_) + halfWinSize_ * bufferId_;
+    windowOutGM_ = GetWindowOutAddrByRankId(rankId_);
+
     coreIdx_ = GetBlockIdx();
 
     serverNum = worldSize_ / SERVER_RANK_SIZE;
@@ -498,7 +512,7 @@ __aicore__ inline void MoeDistributeCombineV2Layered<TemplateMC2TypeA2layeredFun
     PipeBarrier<PIPE_ALL>();
     for (int i = 0; i < 8; i++) {
         shareAddreRank[i] = reinterpret_cast<uint64_t>(
-            RDMA_DATA_SIZE + hccl_.GetWindowsInAddr(rankId_ / SERVER_RANK_SIZE * SERVER_RANK_SIZE + i));
+            RDMA_DATA_SIZE + GetWindowInAddrByRankId(rankId_ / SERVER_RANK_SIZE * SERVER_RANK_SIZE + i));
     }
     magicGlobal_.SetGlobalBuffer((__gm__ uint64_t *)(shareAddreRank[rankId_ % SERVER_RANK_SIZE]));
     magicValue = magicGlobal_.GetValue(MAGIC_OFFSET / sizeof(uint64_t));
@@ -686,7 +700,7 @@ __aicore__ inline void MoeDistributeCombineV2Layered<TemplateMC2TypeA2layeredFun
              RoundUp(maxLocalBs * axisK_, B32_PER_BLOCK));
     PipeBarrier<PIPE_ALL>();
     SyncFunc<AscendC::HardEvent::MTE2_S>();
-    uint64_t rdmaAddr = (uint64_t)(hccl_.GetWindowsOutAddr(rankId_) + halfWinSize_ * bufferId_ +
+    uint64_t rdmaAddr = (uint64_t)(GetWindowOutAddrByRankId(rankId_) + halfWinSize_ * bufferId_ +
                                    serverId_ * rankSizeOnWin_ * SERVER_RANK_SIZE);
     scaleOutWindow_.SetGlobalBuffer((__gm__ ExpandXType *)rdmaAddr);  // 16bit
     localOutWindow_.SetGlobalBuffer((__gm__ ExpandXType *)rdmaAddr);
@@ -849,9 +863,9 @@ __aicore__ inline void MoeDistributeCombineV2Layered<TemplateMC2TypeA2layeredFun
         copyLen_ = axisH_ * static_cast<uint32_t>(sizeof(ExpandXType));
         copyLenAlign_ = copyLen_;
     }
-    uint64_t srcrdmaAddr = (uint64_t)(hccl_.GetWindowsOutAddr(rankId_) + halfWinSize_ * bufferId_ +
+    uint64_t srcrdmaAddr = (uint64_t)(GetWindowOutAddrByRankId(rankId_) + halfWinSize_ * bufferId_ +
                                       checkServer * rankSizeOnWin_ * SERVER_RANK_SIZE);
-    uint64_t dstrdmaAddr = (uint64_t)(hccl_.GetWindowsInAddr(tragRankId) + halfWinSize_ * bufferId_ +
+    uint64_t dstrdmaAddr = (uint64_t)(GetWindowInAddrByRankId(tragRankId) + halfWinSize_ * bufferId_ +
                                       (rankId_ / SERVER_RANK_SIZE) * rankSizeOnWin_ * SERVER_RANK_SIZE);
     while (!stopFlag) {
         copyOnceNum = 0;
@@ -905,7 +919,7 @@ __aicore__ inline void MoeDistributeCombineV2Layered<TemplateMC2TypeA2layeredFun
     }
     if (rankId_ != tragRankId) {
         AIVRDMAPostSend((GM_ADDR)((uint64_t)(readStateGlobal_.GetPhyAddr())),
-                        (GM_ADDR)((uint64_t)(hccl_.GetWindowsInAddr(tragRankId) + halfWinSize_ * bufferId_ +
+                        (GM_ADDR)((uint64_t)(GetWindowInAddrByRankId(tragRankId) + halfWinSize_ * bufferId_ +
                                              dataSpaceSize_ + selfServerID * STATE_OFFSET)),
                         tragRankId, 32, qp_info_);
     }
@@ -953,7 +967,7 @@ __aicore__ inline void MoeDistributeCombineV2Layered<TemplateMC2TypeA2layeredFun
         startBs = coreIdx_ * processNum + resNum;
         endBs = startBs + processNum;
     }
-    uint64_t selfRankAddr = (uint64_t)(hccl_.GetWindowsInAddr(rankId_) + halfWinSize_ * bufferId_);
+    uint64_t selfRankAddr = (uint64_t)(GetWindowInAddrByRankId(rankId_) + halfWinSize_ * bufferId_);
     localInWindow_.SetGlobalBuffer((__gm__ ExpandXTransType *)(selfRankAddr));
 
     // 低精度需要用到的变量
@@ -1218,7 +1232,6 @@ __aicore__ inline void MoeDistributeCombineV2Layered<TemplateMC2TypeA2layeredFun
         Preload();       // 前8个核执行
         WaitDispatch();  // 前serverNum个核执行
         SumToServer();
-        hccl_.Finalize();
     }
 }
 }  // namespace MoeDistributeCombineA2Impl
