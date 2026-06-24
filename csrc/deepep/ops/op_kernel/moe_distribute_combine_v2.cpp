@@ -2,6 +2,7 @@
 #include "moe_distribute_combine_v2_tiling.h"
 #include "moe_distribute_combine_v2.h"
 #include "moe_distribute_combine_v2_a5.h"
+#include "moe_distribute_combine_v2_layout.h"
 #ifdef __DAV_C310__
 #include "moe_distribute_combine_v2_ccu.h"
 using namespace MoeDistributeCombineA5CCUImpl;
