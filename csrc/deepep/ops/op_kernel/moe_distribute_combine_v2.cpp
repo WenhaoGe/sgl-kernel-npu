@@ -37,7 +37,8 @@ __aicore__ inline void ExecMoeDistributeCombineV2(GM_ADDR expandX, GM_ADDR exper
  *     0：无量化, 2:int8量化
  * 第3位（百位）：是否做tp域allgather:
  *     0: 不做, 1: 做
- * 第4位（千位）：无实际意义:
+ * 第4位（千位）：
+       0: 不做, 1: 做, 2. 用hierarchy模版
  * 第5位（万位）: A2/A3/A5
  *     20000: A2, 30000: A3, 50000: A5
  */
@@ -77,6 +78,18 @@ extern "C" __global__ __aicore__ void moe_distribute_combine_v2(
                 elasticInfo, oriX, constExpertAlpha1, constExpertAlpha2, constExpertV, XOut, workspaceGM, &pipe,
                 &tilingData);
         op.Process();
+    } else if (TILING_KEY_IS(32000)) {
+        auto contextGM0 = AscendC::GetHcclContext<HCCL_GROUP_ID_0>();
+        DataplaneMode dataplaneMode = GetDataplaneMode(contextGM0);
+        if (dataplaneMode == DataplaneMode::AIV) {
+            MoeDistributeCombineA2Impl<DTYPE_EXPAND_X, int32_t, DTYPE_EXPAND_X> op;
+            op.Init(expandX, expertIds, assistInfoForCombine, epSendCount, scales, XOut, workspaceGM, &pipe, tilingGM,
+                    contextGM0);
+            op.Process();
+        } else {
+            assert(false, "The driver version is too low and does not support layered mode.\n");
+        }
+    }
     }
 #ifdef __DAV_C310__
     if (TILING_KEY_IS(60000)) {

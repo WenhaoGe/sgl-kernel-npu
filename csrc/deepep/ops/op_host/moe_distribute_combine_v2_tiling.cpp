@@ -69,6 +69,7 @@ constexpr uint64_t TILING_KEY_CCU_TYPE = 60000;
 constexpr uint64_t TILING_KEY_A5_TYPE = 50000;
 constexpr uint64_t TILING_KEY_A3_TYPE = 30000;
 constexpr uint64_t TILING_KEY_A2_TYPE = 20000;
+constexpr uint32_t TILINGKEY_COMM_ALG_LAYOUT = 2000;
 constexpr uint64_t TILINGKEY_TP_WORLD_SIZE = 100;
 constexpr uint64_t TP_WORLD_SIZE_TWO = 2;
 constexpr uint32_t TILINGKEY_INT8_COMM_QUANT = 20U;
@@ -1119,6 +1120,14 @@ static ge::graphStatus MoeDistributeCombineA3TilingFuncImpl(gert::TilingContext 
     OP_LOGD(nodeName, "Enter MoeDistributeCombineV2 Tiling func");
     MoeDistributeCombineV2TilingData *tilingData = context->GetTilingData<MoeDistributeCombineV2TilingData>();
     OP_TILING_CHECK(tilingData == nullptr, OP_LOGE(nodeName, "tilingData is nullptr."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(
+        (strlen(commAlgPtr) != 0) && (strcmp(commAlgPtr, "fullmesh_v1") != 0) &&
+            (strcmp(commAlgPtr, "fullmesh_v2") != 0 && (strcmp(commAlgPtr, "ccu") != 0) &&
+            (strcmp(commAlgPtr, "hierarchy") != 0)),
+        OP_LOGE(nodeName,
+                "Attr commAlg is invalid, current only support fullmesh_v1 and fullmesh_v2, but got commAlg = %s.",
+                commAlgPtr),
+        return ge::GRAPH_FAILED);
     auto attrs = context->GetAttrs();
     auto commAlgPtr = attrs->GetAttrPointer<char>(static_cast<int>(ATTR_COMM_ALG_INDEX));
     bool ccuFlag = strcmp(commAlgPtr, "ccu") == 0;
@@ -1155,6 +1164,9 @@ static ge::graphStatus MoeDistributeCombineA3TilingFuncImpl(gert::TilingContext 
         tilingKey = TILING_KEY_A2_TYPE;
     }
     CalTilingKey(tilingKey, tpWorldSize, commQuantMode);
+    if (strcmp(commAlgPtr, "hierarchy") == 0) {
+        tilingKey += TILINGKEY_COMM_ALG_LAYOUT;
+    }
     OP_LOGD(nodeName, "tilingKey is %lu", tilingKey);
     context->SetTilingKey(tilingKey);
 
