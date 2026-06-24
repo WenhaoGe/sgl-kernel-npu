@@ -36,6 +36,7 @@ struct MoeDistributeCombineV2TilingData {
     Mc2InitTiling mc2InitTiling;
     Mc2CcTiling mc2CcTiling1;
     Mc2CcTiling mc2CcTiling2;
+    Mc2CcTiling mc2CcTiling;
     MoeDistributeCombineV2Info moeDistributeCombineV2Info;
 };
 
