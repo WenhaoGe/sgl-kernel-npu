@@ -364,7 +364,6 @@ __aicore__ inline void MoeDistributeCombineV2Layered<TemplateMC2TypeA2layeredFun
 {
     tpipe_ = pipe;
     REGISTER_TILING_DEFAULT(MoeDistributeCombineV2TilingData);
-    GET_TILING_DATA_WITH_STRUCT(MoeDistributeCombineV2TilingData, tilingData, tiling);
     expandXGM_ = expandX;
     expertIdsGM_ = expertIds;
     expandIdxGM_ = expandIdx;
