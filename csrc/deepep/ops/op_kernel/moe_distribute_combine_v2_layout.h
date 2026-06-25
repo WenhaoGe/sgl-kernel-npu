@@ -107,7 +107,7 @@ public:
     __aicore__ inline MoeDistributeCombineV2Layered(){};
     __aicore__ inline void Init(GM_ADDR expandX, GM_ADDR expertIds, GM_ADDR expandIdx, GM_ADDR sendCount,
                                 GM_ADDR scales, GM_ADDR XOut, GM_ADDR workspaceGM, TPipe *pipe, GM_ADDR tiling,
-                                const MoeDistributeCombineV2TilingData tilingData);
+                                MoeDistributeCombineV2TilingData tilingData);
     __aicore__ inline void Process();
     __aicore__ inline void AIVRDMAPostSend(GM_ADDR srcDmaAddr, GM_ADDR destDmaAddr, uint64_t destRankId,
                                            uint64_t messageLen, __gm__ HcclAiRMAInfo *QpInfo);
@@ -360,9 +360,11 @@ __aicore__ inline void MoeDistributeCombineV2Layered<TemplateMC2TypeA2layeredFun
 template <TemplateMC2TypeA2layeredClass>
 __aicore__ inline void MoeDistributeCombineV2Layered<TemplateMC2TypeA2layeredFunc>::Init(
     GM_ADDR expandX, GM_ADDR expertIds, GM_ADDR expandIdx, GM_ADDR sendCount, GM_ADDR scales, GM_ADDR XOut,
-    GM_ADDR workspaceGM, TPipe *pipe, GM_ADDR tiling, const MoeDistributeCombineV2TilingData tilingData)
+    GM_ADDR workspaceGM, TPipe *pipe, GM_ADDR tiling, MoeDistributeCombineV2TilingData tilingData)
 {
     tpipe_ = pipe;
+    REGISTER_TILING_DEFAULT(MoeDistributeCombineV2TilingData);
+    GET_TILING_DATA_WITH_STRUCT(MoeDistributeCombineV2TilingData, tilingData, tiling);
     expandXGM_ = expandX;
     expertIdsGM_ = expertIds;
     expandIdxGM_ = expandIdx;
