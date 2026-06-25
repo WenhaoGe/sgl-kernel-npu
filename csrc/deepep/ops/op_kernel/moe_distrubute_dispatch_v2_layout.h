@@ -226,7 +226,6 @@ __aicore__ inline void MoeDistributeDispatchV2Layered<TemplateMC2TypeV2layeredFu
     const MoeDistributeDispatchV2TilingData tilingData)
 {
     tpipe_ = pipe;
-    printf("========MoeDistributeDispatchV2Layered==========\n");
 
     winContext_ = (__gm__ HcclOpResParam *)AscendC::GetHcclContext<HCCL_GROUP_ID_0>();
     rankId_ = tilingData.moeDistributeDispatchV2Info.epRankId;
@@ -1419,6 +1418,7 @@ __aicore__ inline void MoeDistributeDispatchV2Layered<TemplateMC2TypeV2layeredFu
 
         PipeBarrier<PIPE_ALL>();
         SyncAll<true>();
+        printf("success finish dispatch!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
     }
 }
 }  // namespace MoeDistributeDispatchA2Impl
