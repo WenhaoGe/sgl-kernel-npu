@@ -1077,11 +1077,14 @@ static void CalTilingKey(uint64_t &tilingKey, const uint64_t tpWorldSize, uint32
 static void SetHCommCfg(const gert::TilingContext *context, MoeDistributeCombineV2TilingData *tiling,
                         const std::string groupEp, const std::string groupTp)
 {
+    auto attrs = context->GetAttrs();
     const char *nodeName = context->GetNodeName();
     OP_LOGD(nodeName, "MoeDistributeCombineV2 groupEp = %s, groupTp = %s", groupEp.c_str(), groupTp.c_str());
+    auto commAlgPtr = attrs->GetAttrPointer<char>(static_cast<int>(ATTR_COMM_ALG_INDEX));
     uint32_t opType1 = OP_TYPE_ALL_TO_ALL;
     uint32_t opType2 = OP_TYPE_REDUCE_SCATTER;
-    std::string algConfigAllToAllStr = "AlltoAll=level0:fullmesh;level1:pairwise";
+    std::string algConfigAllToAllStr = strcmp(commAlgPtr, "hierarchy") == 0 ?
+"AlltoAll=level1:hierarchy" : "AlltoAll=level0:fullmesh;level1:pairwise";
     std::string algConfigReduceScatterStr = "ReduceScatter=level0:ring";
 
     AscendC::Mc2CcTilingConfig mc2CcTilingConfig(groupEp, opType1, algConfigAllToAllStr);
