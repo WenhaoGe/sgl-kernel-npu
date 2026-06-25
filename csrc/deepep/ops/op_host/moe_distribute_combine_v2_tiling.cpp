@@ -89,7 +89,8 @@ constexpr size_t MAX_GROUP_NAME_LENGTH = 128UL;
 constexpr int64_t MAX_SHARED_EXPERT_NUM = 4;
 constexpr int64_t MAX_EP_WORLD_SIZE = 768L;  // 384 * 2
 constexpr int64_t MIN_EP_WORLD_SIZE = 2;
-constexpr int64_t EP_RESTRICT_8 = 8;
+constexpr uint32_t HIERARCHY_SERVER_RANK_SIZE = 16U;
+constexpr uint32_t HIERARCHY_IPC_REDUCE_USED_CORE_NUM = 32U;
 constexpr int64_t MAX_TP_WORLD_SIZE = 2;
 constexpr int64_t BS_UPPER_BOUND = 512;
 
@@ -1131,6 +1132,7 @@ static ge::graphStatus MoeDistributeCombineA3TilingFuncImpl(gert::TilingContext 
                 commAlgPtr),
         return ge::GRAPH_FAILED);
     bool ccuFlag = strcmp(commAlgPtr, "ccu") == 0;
+    bool hierarchyFlag = strcmp(commAlgPtr, "hierarchy") == 0;
     OP_LOGD(nodeName, "commAlgPtr %s", commAlgPtr);
     std::string groupEp = "";
     std::string groupTp = "";
@@ -1164,7 +1166,7 @@ static ge::graphStatus MoeDistributeCombineA3TilingFuncImpl(gert::TilingContext 
         tilingKey = TILING_KEY_A2_TYPE;
     }
     CalTilingKey(tilingKey, tpWorldSize, commQuantMode);
-    if (strcmp(commAlgPtr, "hierarchy") == 0) {
+    if (hierarchyFlag) {
         tilingKey += TILINGKEY_COMM_ALG_LAYOUT;
     }
     OP_LOGD(nodeName, "tilingKey is %lu", tilingKey);
@@ -1190,6 +1192,14 @@ static ge::graphStatus MoeDistributeCombineA3TilingFuncImpl(gert::TilingContext 
     // 检查属性的取值是否合法
     OP_TILING_CHECK(!CheckAttrs(context, *tilingData, nodeName, localMoeExpertNum, isActiveMask),
                     OP_LOGE(nodeName, "attr check failed."), return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(
+        hierarchyFlag &&
+            (tilingData->moeDistributeCombineV2Info.epWorldSize < HIERARCHY_SERVER_RANK_SIZE ||
+             tilingData->moeDistributeCombineV2Info.epWorldSize % HIERARCHY_SERVER_RANK_SIZE != 0U),
+        OP_LOGE(nodeName,
+                "hierarchy commAlg requires epWorldSize to be a multiple of %u, but got epWorldSize=%u.",
+                HIERARCHY_SERVER_RANK_SIZE, tilingData->moeDistributeCombineV2Info.epWorldSize),
+        return ge::GRAPH_FAILED);
 
     uint32_t sharedExpertNum = tilingData->moeDistributeCombineV2Info.sharedExpertNum;
     uint32_t sharedExpertRankNum = tilingData->moeDistributeCombineV2Info.sharedExpertRankNum;
@@ -1236,6 +1246,21 @@ static ge::graphStatus MoeDistributeCombineA3TilingFuncImpl(gert::TilingContext 
     uint64_t ubSize = 0UL;
     ascendcPlatform.GetCoreMemSize(platform_ascendc::CoreMemType::UB, ubSize);
     blockDim = ascendcPlatform.CalcTschBlockDim(aivNum, 0, aivNum);
+    uint64_t hierarchyServerNum =
+        tilingData->moeDistributeCombineV2Info.epWorldSize / HIERARCHY_SERVER_RANK_SIZE;
+    OP_TILING_CHECK(
+        hierarchyFlag && hierarchyServerNum > HIERARCHY_IPC_REDUCE_USED_CORE_NUM,
+        OP_LOGE(nodeName,
+                "hierarchy commAlg requires serverNum to be no greater than %u, but got serverNum=%lu.",
+                HIERARCHY_IPC_REDUCE_USED_CORE_NUM, hierarchyServerNum),
+        return ge::GRAPH_FAILED);
+    OP_TILING_CHECK(
+        hierarchyFlag && aivNum < HIERARCHY_IPC_REDUCE_USED_CORE_NUM + hierarchyServerNum,
+        OP_LOGE(nodeName,
+                "hierarchy commAlg requires at least %lu AIV cores, but got aivNum=%lu, epWorldSize=%u.",
+                HIERARCHY_IPC_REDUCE_USED_CORE_NUM + hierarchyServerNum, aivNum,
+                tilingData->moeDistributeCombineV2Info.epWorldSize),
+        return ge::GRAPH_FAILED);
     context->SetBlockDim(blockDim);
     tilingData->moeDistributeCombineV2Info.aivNum = aivNum;
     tilingData->moeDistributeCombineV2Info.totalUbSize = ubSize;
