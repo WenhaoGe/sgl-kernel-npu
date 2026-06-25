@@ -60,7 +60,7 @@ public:
     constexpr static uint32_t B16_PER_BLOCK = 16U;
     constexpr static uint32_t B32_PER_BLOCK = 8U;
     constexpr static uint32_t B64_PER_BLOCK = 4U;
-    constexpr static uint32_t SERVER_RANK_SIZE = 8U;
+    constexpr static uint32_t SERVER_RANK_SIZE = 16U;
     constexpr static uint32_t IPC_DATA_OFFSET = 4U * 1024U * 1024U;
     constexpr static uint32_t RDMA_DATA_SIZE = 800U * 1024U * 1024U;
     constexpr static uint32_t VEC_LEN = 256U;
@@ -139,7 +139,7 @@ private:
     GlobalTensor<int32_t> statusSpaceGlobal_;  // win区状态位置拷入相关参数
     GlobalTensor<int32_t> readStateGlobal_;
 
-    uint64_t shareAddreRank[8];
+    uint64_t shareAddreRank[SERVER_RANK_SIZE];
 
     // 低精度需要用到的变量
     GlobalTensor<ExpandXType> scaleOutWindow_;  // 第一层输出的scale值和offset，都是fp16格式
@@ -509,7 +509,7 @@ __aicore__ inline void MoeDistributeCombineV2Layered<TemplateMC2TypeA2layeredFun
     // serverNum | bs * serverNum |
 
     PipeBarrier<PIPE_ALL>();
-    for (int i = 0; i < 8; i++) {
+    for (uint32_t i = 0; i < SERVER_RANK_SIZE; i++) {
         shareAddreRank[i] = reinterpret_cast<uint64_t>(
             RDMA_DATA_SIZE + GetWindowInAddrByRankId(rankId_ / SERVER_RANK_SIZE * SERVER_RANK_SIZE + i));
     }
@@ -597,7 +597,7 @@ __aicore__ inline void MoeDistributeCombineV2Layered<TemplateMC2TypeA2layeredFun
         }
     }
     SyncAll<true>();
-    // 前8个核 每个核负责向同机0-7卡发送status数据，表示rankId_向targetRank完成数据发送
+    // 前SERVER_RANK_SIZE个核 每个核负责向同机rank发送status数据，表示rankId_向targetRank完成数据发送
     if (coreIdx_ < SERVER_RANK_SIZE) {
         uint64_t targetAddr = shareAddreRank[coreIdx_ % SERVER_RANK_SIZE];
         shareFlagGlobal_.SetGlobalBuffer((__gm__ uint64_t *)targetAddr);
@@ -617,7 +617,7 @@ template <TemplateMC2TypeA2layeredClass>
 __aicore__ inline void MoeDistributeCombineV2Layered<TemplateMC2TypeA2layeredFunc>::WaitIPC()
 {
     shareFlagGlobal_.SetGlobalBuffer((__gm__ uint64_t *)shareAddreRank[rankId_ % SERVER_RANK_SIZE]);
-    // 只要8个core分别wait 来自8卡的flag，然后sync一下 再进行流水
+    // 前SERVER_RANK_SIZE个core分别wait 来自同机rank的flag，然后sync一下 再进行流水
 
     if (coreIdx_ < SERVER_RANK_SIZE) {
         LocalTensor<uint64_t> inUb = statusBuf_.Get<uint64_t>();
@@ -1030,7 +1030,7 @@ __aicore__ inline void MoeDistributeCombineV2Layered<TemplateMC2TypeA2layeredFun
     baseBuffOffset += axisH_ * sizeof(float);
 
     /*
-      由于收回的token是按照serverId排布的，所以需要将一个server的token的权重放在一起，比如topk_idx=[5,10,11,15,7,9,4,14],专家0-7是server0，8-15是server1
+      由于收回的token是按照serverId排布的，所以需要将一个server的token的权重放在一起，比如16卡场景下专家0-15是server0，16-31是server1
       则，收回的token排布为[5,7,9,4]...[10,11,15,9]
      */
     LocalTensor<int32_t> sortedIndexLocal =
@@ -1208,7 +1208,7 @@ __aicore__ inline void MoeDistributeCombineV2Layered<TemplateMC2TypeA2layeredFun
 {
     if ASCEND_IS_AIV {
         GM2IPC();  // 前 worldSize个核执行：1. 重排token；2.通过IPC通信将token拷贝到目标rank的共享内存上；
-        WaitIPC();  // 前8个核执行，通过IPC接收机内其他rank发来的status
+        WaitIPC();  // 前SERVER_RANK_SIZE个核执行，通过IPC接收机内其他rank发来的status
         stepCoreNum = IPC_REDUCE_USED_CORE_NUM;
         if (coreIdx_ < stepCoreNum) {
             SumToWindow();
