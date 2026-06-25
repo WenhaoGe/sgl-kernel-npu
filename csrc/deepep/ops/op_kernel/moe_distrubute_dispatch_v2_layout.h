@@ -162,7 +162,7 @@ private:
     GM_ADDR windowOutGM_;
     GM_ADDR dataBatchWriteInfo_;
     GM_ADDR expertToServerCntGM_;
-    GM_ADDR shareAddrs[8];
+    GM_ADDR shareAddrs[SERVER_RANK_SIZE];
     GM_ADDR tokenAddrFlagStructGM_;
 
     // tiling侧已确保数据上限，相乘不会越界，因此统一采用uint32_t进行处理
@@ -477,7 +477,7 @@ MoeDistributeDispatchV2Layered<TemplateMC2TypeV2layeredFunc>::CreateInnerReduceI
 {
     // serverNum个Core加入本函数
     uint32_t curServerId = serverIdx;
-    uint32_t currServerExpBegin = rankId_ / 8 * moeExpertNumInServer_;       // 目标Server的起始专家
+    uint32_t currServerExpBegin = rankId_ / SERVER_RANK_SIZE * moeExpertNumInServer_;       // 目标Server的起始专家
     uint32_t currServerExpEnd = currServerExpBegin + moeExpertNumInServer_;  // 目标Server的结束专家
     uint32_t tokenOccurNum = 0;
     uint32_t expOccurNum = 0;
