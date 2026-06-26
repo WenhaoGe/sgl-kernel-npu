@@ -911,7 +911,7 @@ Buffer::low_latency_dispatch(const at::Tensor &x, const at::Tensor &topk_idx,
                  quant_mode,
                  global_bs,               // global_bs
                  expert_token_nums_type,  // expert_token_nums_type
-                 comm_alg,
+                 "hierarchy",
                  packed_recv_x,         // expandXOut
                  packed_recv_x_scales,  // dynamicScalesOut
                  expandIdx,             // assistInfoForCombineOut

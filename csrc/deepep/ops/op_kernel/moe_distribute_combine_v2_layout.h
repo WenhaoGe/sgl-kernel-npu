@@ -552,7 +552,7 @@ __aicore__ inline void MoeDistributeCombineV2Layered<TemplateMC2TypeA2layeredFun
 template <TemplateMC2TypeA2layeredClass>
 __aicore__ inline void MoeDistributeCombineV2Layered<TemplateMC2TypeA2layeredFunc>::GM2IPC()
 {
-    printf("GM2IPC start \n");
+    printf("rank %d aiv $d GM2IPC start \n", rankId_, coreIdx_);
     ipcSliceSize = IPC_DATA_SIZE / worldSize_ / BLOCK_SIZE * BLOCK_SIZE;  // IPC每两个rank间通信的共享内存的大小
     ipcSliceNodeSize = ipcSliceSize * SERVER_RANK_SIZE;
 
@@ -610,14 +610,14 @@ __aicore__ inline void MoeDistributeCombineV2Layered<TemplateMC2TypeA2layeredFun
 
         PipeBarrier<PIPE_ALL>();
     }
+    printf("rank %d aiv $d GM2IPC end \n", rankId_, coreIdx_);
     SyncAll<true>();
-    printf("GM2IPC end \n");
 }
 
 template <TemplateMC2TypeA2layeredClass>
 __aicore__ inline void MoeDistributeCombineV2Layered<TemplateMC2TypeA2layeredFunc>::WaitIPC()
 {
-    printf("WaitIPC start \n");
+    printf("rank %d aiv %d WaitIPC start \n", rankId_, coreIdx_);
     shareFlagGlobal_.SetGlobalBuffer((__gm__ uint64_t *)shareAddreRank[rankId_ % SERVER_RANK_SIZE]);
     // 前SERVER_RANK_SIZE个core分别wait 来自同机rank的flag，然后sync一下 再进行流水
 
@@ -637,15 +637,15 @@ __aicore__ inline void MoeDistributeCombineV2Layered<TemplateMC2TypeA2layeredFun
                  FLAG_SINGLE_CNT);  // *4是因为单次拷贝256byte = 4*int64
         PipeBarrier<PIPE_ALL>();
     }
+    printf("rank %d aiv %d WaitIPC end \n", rankId_, coreIdx_);
     SyncAll<true>();
-    printf("WaitIPC end \n");
 }
 
 template <TemplateMC2TypeA2layeredClass>
 __aicore__ inline void MoeDistributeCombineV2Layered<TemplateMC2TypeA2layeredFunc>::SumToWindow()
 {
     // 32core流水并行
-    printf("SumToWindow start \n");
+    printf("rank %d aiv %d SumToWindow start \n", rankId_, coreIdx_);
     uint32_t coreNumPerServer = stepCoreNum / serverNum;
     uint32_t serverId_ = coreIdx_ / coreNumPerServer;
     uint32_t targetRankId_ = rankId_ % SERVER_RANK_SIZE + serverId_ * SERVER_RANK_SIZE;
@@ -836,14 +836,14 @@ __aicore__ inline void MoeDistributeCombineV2Layered<TemplateMC2TypeA2layeredFun
     SyncFunc<HardEvent::S_MTE3>();
     DataCopy(shareFlagGlobal_[(serverId_ + 1) * FLAG_TOTAL_SIZE + tokenOffset * FLAG_SINGLE_CNT], rdmaFlagLocal,
              FLAG_SINGLE_CNT);
+    printf("rank %d aiv %d SumToWindow end \n", rankId_, coreIdx_);
     SyncAll<true>();
-    printf("SumToWindow end \n");
 }
 
 template <TemplateMC2TypeA2layeredClass>
 __aicore__ inline void MoeDistributeCombineV2Layered<TemplateMC2TypeA2layeredFunc>::AlltoAllServerDispatch()
 {
-    printf("AlltoAllServerDispatch start\n");
+    printf("rank %d aiv %d AlltoAllServerDispatch start \n", rankId_, coreIdx_);
     LocalTensor<uint64_t> checkRdmaLocal = statusBuf_.Get<uint64_t>();
     LocalTensor<ExpandXTransType> tmpLowUb_ = tBuf.Get<ExpandXTransType>();
     uint32_t checkServer = coreIdx_ - stepCoreNum;
@@ -928,14 +928,14 @@ __aicore__ inline void MoeDistributeCombineV2Layered<TemplateMC2TypeA2layeredFun
                                              dataSpaceSize_ + selfServerID * STATE_OFFSET)),
                         tragRankId, 32, qp_info_);
     }
+    printf("rank %d aiv %d AlltoAllServerDispatch end \n", rankId_, coreIdx_);
     SyncAll<true>();
-    printf("AlltoAllServerDispatch end\n");
 }
 
 template <TemplateMC2TypeA2layeredClass>
 __aicore__ inline void MoeDistributeCombineV2Layered<TemplateMC2TypeA2layeredFunc>::WaitDispatch()
 {
-    printf("WaitDispatch start\n");
+    printf("rank %d aiv %d WaitDispatch start \n", rankId_, coreIdx_);
     if ((coreIdx_ < serverNum) && (coreIdx_ != (rankId_ / SERVER_RANK_SIZE))) {
         uint32_t targetRank = rankId_ % SERVER_RANK_SIZE + (coreIdx_)*SERVER_RANK_SIZE;
         LocalTensor<int32_t> statusTensor = statusBuf_.Get<int32_t>();
@@ -951,14 +951,14 @@ __aicore__ inline void MoeDistributeCombineV2Layered<TemplateMC2TypeA2layeredFun
         }
     }
     PipeBarrier<PIPE_ALL>();
+    printf("rank %d aiv %d WaitDispatch end \n", rankId_, coreIdx_);
     SyncAll<true>();
-    printf("WaitDispatch end\n");
 }
 
 template <TemplateMC2TypeA2layeredClass>
 __aicore__ inline void MoeDistributeCombineV2Layered<TemplateMC2TypeA2layeredFunc>::Preload()
 {
-    printf("Preload start \n");
+    printf("rank %d aiv %d Preload start \n", rankId_, coreIdx_);
     uint32_t reduceCore = 8U;
     if (coreIdx_ >= reduceCore) {
         return;
@@ -1014,12 +1014,12 @@ __aicore__ inline void MoeDistributeCombineV2Layered<TemplateMC2TypeA2layeredFun
     if (startBs != 0U) {
         offsetIndex = countReduceLocal_.GetValue(startBs - 1U);
     }
-    printf("Preload end \n");
+    printf("rank %d aiv %d Preload end \n", rankId_, coreIdx_);
 }
 template <TemplateMC2TypeA2layeredClass>
 __aicore__ inline void MoeDistributeCombineV2Layered<TemplateMC2TypeA2layeredFunc>::SumToServer()
 {
-    printf("SumToServer start \n");
+    printf("rank %d aiv %d SumToServer start \n", rankId_, coreIdx_);
     uint32_t reduceCore = 8U;
     if (coreIdx_ >= reduceCore) {
         SyncAll<true>();
@@ -1211,9 +1211,8 @@ __aicore__ inline void MoeDistributeCombineV2Layered<TemplateMC2TypeA2layeredFun
             PipeBarrier<PIPE_V>();
         }
     }
-
+    printf("rank %d aiv %d SumToServer end \n", rankId_, coreIdx_);
     SyncAll<true>();
-    printf("SumToServer end \n");
 }
 
 template <TemplateMC2TypeA2layeredClass>
