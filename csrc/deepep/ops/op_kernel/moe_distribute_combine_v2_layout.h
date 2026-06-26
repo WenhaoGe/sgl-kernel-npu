@@ -552,7 +552,7 @@ __aicore__ inline void MoeDistributeCombineV2Layered<TemplateMC2TypeA2layeredFun
 template <TemplateMC2TypeA2layeredClass>
 __aicore__ inline void MoeDistributeCombineV2Layered<TemplateMC2TypeA2layeredFunc>::GM2IPC()
 {
-    printf("rank %d aiv $d GM2IPC start \n", rankId_, coreIdx_);
+    printf("rank %d aiv %d GM2IPC start \n", rankId_, coreIdx_);
     ipcSliceSize = IPC_DATA_SIZE / worldSize_ / BLOCK_SIZE * BLOCK_SIZE;  // IPC每两个rank间通信的共享内存的大小
     ipcSliceNodeSize = ipcSliceSize * SERVER_RANK_SIZE;
 
@@ -610,7 +610,7 @@ __aicore__ inline void MoeDistributeCombineV2Layered<TemplateMC2TypeA2layeredFun
 
         PipeBarrier<PIPE_ALL>();
     }
-    printf("rank %d aiv $d GM2IPC end \n", rankId_, coreIdx_);
+    printf("rank %d aiv %d GM2IPC end \n", rankId_, coreIdx_);
     SyncAll<true>();
 }
 
