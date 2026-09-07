@@ -15,8 +15,12 @@ from .ep_strategy import (
     get_low_latency_strategy,
     get_normal_strategy,
 )
-from .utils import EventOverlap, _resolve_low_latency_quant_mode, log_parameters
-from .utils import EventOverlap, _resolve_normal_quant_mode, log_parameters
+from .utils import (
+    EventOverlap,
+    _resolve_low_latency_quant_mode,
+    _resolve_normal_quant_mode,
+    log_parameters,
+)
 
 
 class FuseMode(IntEnum):
