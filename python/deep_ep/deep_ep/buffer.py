@@ -686,11 +686,13 @@ class Buffer:
             event: the event after executing the kernel (valid only if `async_finish` is set).
             hook: the receiving hook function (valid only if `return_recv_hook` is set).
         """
-        quant_mode = _resolve_low_latency_quant_mode(
-            use_fp8=use_fp8,
-            use_mxfp4=use_mxfp4,
-            use_mxfp8=use_mxfp8 or (use_fp8 and use_ue8m0),
-        )
+        quant_mode = None
+        if self.low_latency_strategy.get_name() == "default":
+            quant_mode = _resolve_low_latency_quant_mode(
+                use_fp8=use_fp8,
+                use_mxfp4=use_mxfp4,
+                use_mxfp8=use_mxfp8 or (use_fp8 and use_ue8m0),
+            )
 
         return self.low_latency_strategy.low_latency_dispatch(
             x=x,

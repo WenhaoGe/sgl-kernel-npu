@@ -39,23 +39,23 @@ logger = logging.getLogger()
 torch.set_printoptions(profile="full")
 
 
-def _resolve_low_latency_quant_mode(
+def _resolve_quant_mode(
     use_fp8: bool,
     use_mxfp4: bool,
     use_mxfp8: bool,
+    *,
+    fallback_fp8_to_int8_on_unknown_device: bool = False,
 ) -> Optional[str]:
-    """Resolve the effective ``quant_mode`` for low-latency dispatch.
+    """Resolve the effective ``quant_mode`` from bool flags and device architecture.
 
     Looks up ``QUANT_MODE_TABLE[(param_type, version_code)]`` for the first
-    active bool flag. ``None`` in the table means the combination is not
+    active bool flag.  ``None`` in the table means the combination is not
     supported on that hardware.
 
     Priority:
     1. ``use_mxfp4`` / ``use_mxfp8`` / ``use_fp8`` bool flags (table lookup).
     2. ``DEEP_NORMAL_MODE_USE_INT8_QUANT=1`` env var (deprecated fallback).
     3. ``None`` (BF16, no quantization).
-
-    ``use_ue8m0`` is handled by the caller as a legacy alias for MXFP8.
     """
     if sum([use_fp8, use_mxfp8, use_mxfp4]) > 1:
         raise ValueError("at most one of use_mxfp8, use_mxfp4, use_fp8 can be True")
@@ -77,7 +77,11 @@ def _resolve_low_latency_quant_mode(
             return quant_mode
         # ACL_DEV_ATTR_NPU_ARCH (601) is unavailable with older CANN
         # versions. Preserve the legacy non-A5 behavior in that case.
-        if param_type == "use_fp8" and version_code is None:
+        if (
+            fallback_fp8_to_int8_on_unknown_device
+            and param_type == "use_fp8"
+            and version_code is None
+        ):
             return "int8"
         raise NotImplementedError(
             f"{param_type} is not supported on device version {version_code} "
@@ -89,6 +93,23 @@ def _resolve_low_latency_quant_mode(
         return "int8"
 
     return None
+
+
+def _resolve_low_latency_quant_mode(
+    use_fp8: bool,
+    use_mxfp4: bool,
+    use_mxfp8: bool,
+) -> Optional[str]:
+    """Resolve the effective ``quant_mode`` for low-latency dispatch.
+
+    ``use_ue8m0`` is handled by the caller as a legacy alias for MXFP8.
+    """
+    return _resolve_quant_mode(
+        use_fp8=use_fp8,
+        use_mxfp4=use_mxfp4,
+        use_mxfp8=use_mxfp8,
+        fallback_fp8_to_int8_on_unknown_device=True,
+    )
 
 
 def get_simplify_tensor(arg):
@@ -172,42 +193,9 @@ def _resolve_normal_quant_mode(
     use_mxfp4: bool,
     use_mxfp8: bool,
 ) -> Optional[str]:
-    """Resolve the effective ``quant_mode`` for normal dispatch.
-
-    Looks up ``QUANT_MODE_TABLE[(param_type, version_code)]`` for the first
-    active bool flag.  ``None`` in the table means the combination is not
-    supported on that hardware.
-
-    Priority:
-    1. ``use_mxfp4`` / ``use_mxfp8`` / ``use_fp8`` bool flags (table lookup).
-    2. ``DEEP_NORMAL_MODE_USE_INT8_QUANT=1`` env var (deprecated fallback).
-    3. ``None`` (BF16, no quantization).
-    """
-    if sum([use_fp8, use_mxfp8, use_mxfp4]) > 1:
-        raise ValueError("at most one of use_mxfp8, use_mxfp4, use_fp8 can be True")
-
-    try:
-        version_code = get_device_version()
-    except Exception:
-        version_code = None
-
-    for param_type, flag in (
-        ("use_mxfp4", use_mxfp4),
-        ("use_mxfp8", use_mxfp8),
-        ("use_fp8", use_fp8),
-    ):
-        if not flag:
-            continue
-        quant_mode = QUANT_MODE_TABLE.get((param_type, version_code))
-        if quant_mode is not None:
-            return quant_mode
-        raise NotImplementedError(
-            f"{param_type} is not supported on device version {version_code} "
-            f"({DEVICE_VERSION_TABLE.get(version_code, 'unknown')})."
-        )
-
-    # Deprecated env-var fallback for backward compatibility
-    if os.getenv("DEEP_NORMAL_MODE_USE_INT8_QUANT") == "1":
-        return "int8"
-
-    return None
+    """Resolve the effective ``quant_mode`` for normal dispatch."""
+    return _resolve_quant_mode(
+        use_fp8=use_fp8,
+        use_mxfp4=use_mxfp4,
+        use_mxfp8=use_mxfp8,
+    )

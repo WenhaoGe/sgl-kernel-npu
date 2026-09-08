@@ -20,6 +20,14 @@ from utils import (
 )
 
 
+def get_alltoall_quant_config(quant_type: str):
+    if quant_type == "int8":
+        return True, False, False
+    if quant_type == "bf16":
+        return False, False, False
+    raise ValueError(f"Unsupported quant_type for low-latency alltoall: {quant_type}")
+
+
 def test(
     aligned_num_tokens: int,  # 对齐后的最大token数
     num_tokens: int,  # 当前rank的实际token数，有效token数
@@ -69,10 +77,7 @@ def test(
         (num_local_experts,), dtype=torch.int, device="npu"
     )
 
-    if quant_type == "int8":
-        quant_configs = [(True, False, False)]
-    else:  # no quant
-        quant_configs = [(False, False, False)]
+    quant_configs = [get_alltoall_quant_config(quant_type)]
 
     for dispatch_use_fp8, dispatch_use_ue8m0, dispatch_use_mxfp4 in quant_configs:
         for current_x in filter(lambda elem: elem is not None, (x_pure_rand,)):
