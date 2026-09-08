@@ -15,12 +15,7 @@ from .ep_strategy import (
     get_low_latency_strategy,
     get_normal_strategy,
 )
-from .utils import (
-    EventOverlap,
-    _resolve_low_latency_quant_mode,
-    _resolve_normal_quant_mode,
-    log_parameters,
-)
+from .utils import EventOverlap, _resolve_quant_mode, log_parameters
 
 
 class FuseMode(IntEnum):
@@ -689,7 +684,7 @@ class Buffer:
         """
         quant_mode = None
         if self.low_latency_strategy.get_name() == "default":
-            quant_mode = _resolve_low_latency_quant_mode(
+            quant_mode = _resolve_quant_mode(
                 use_fp8=use_fp8,
                 use_mxfp4=use_mxfp4,
                 use_mxfp8=use_mxfp8 or (use_fp8 and use_ue8m0),
