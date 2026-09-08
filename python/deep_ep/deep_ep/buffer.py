@@ -663,8 +663,9 @@ class Buffer:
             return_recv_hook: return a receiving hook if set. If set, the kernel will just do the RDMA request issues,
                 but **without actually receiving the data**. You must call the received hook to make sure the data's arrival.
                 If you do not set this flag, the kernel will ensure the data's arrival.
-            topk_weights: the expert weights corresponding to `topk_idx`.
-            use_mxfp8: selects MXFP8 E4M3 on A5; unsupported on A2/A3.
+            topk_weights: `[num_tokens, num_topk]` with `torch.float`, the expert weights of each token to dispatch.
+            use_mxfp8: enable MXFP8 per-block quantization → ``mx_fp8_e4m3`` (A5 only).
+                Raises ``NotImplementedError`` on A2/A3.
 
         Quantization selection priority for the default strategy is `use_mxfp4`, `use_mxfp8` (including the legacy
         `use_fp8=True, use_ue8m0=True` alias), `use_fp8`, the deprecated

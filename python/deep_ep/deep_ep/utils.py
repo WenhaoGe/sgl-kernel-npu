@@ -44,7 +44,7 @@ def _resolve_quant_mode(
     use_mxfp4: bool,
     use_mxfp8: bool,
     *,
-    fallback_fp8_to_int8_on_unknown_device: bool = False,
+    fallback_fp8_to_int8: bool = False,
 ) -> Optional[str]:
     """Resolve the effective ``quant_mode`` from bool flags and device architecture.
 
@@ -77,11 +77,7 @@ def _resolve_quant_mode(
             return quant_mode
         # ACL_DEV_ATTR_NPU_ARCH (601) is unavailable with older CANN
         # versions. Preserve the legacy non-A5 behavior in that case.
-        if (
-            fallback_fp8_to_int8_on_unknown_device
-            and param_type == "use_fp8"
-            and version_code is None
-        ):
+        if fallback_fp8_to_int8 and param_type == "use_fp8" and version_code is None:
             return "int8"
         raise NotImplementedError(
             f"{param_type} is not supported on device version {version_code} "
@@ -108,7 +104,7 @@ def _resolve_low_latency_quant_mode(
         use_fp8=use_fp8,
         use_mxfp4=use_mxfp4,
         use_mxfp8=use_mxfp8,
-        fallback_fp8_to_int8_on_unknown_device=True,
+        fallback_fp8_to_int8=True,
     )
 
 
