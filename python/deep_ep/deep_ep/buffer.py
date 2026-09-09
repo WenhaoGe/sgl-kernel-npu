@@ -372,7 +372,7 @@ class Buffer:
         config = self.get_dispatch_config(self.group_size) if config is None else config
 
         # Resolve quant_mode from bool flags + device architecture
-        quant_mode = _resolve_normal_quant_mode(use_fp8, use_mxfp4, use_mxfp8)
+        quant_mode = _resolve_quant_mode(use_fp8, use_mxfp4, use_mxfp8)
 
         # Delegate to normal strategy
         return self.normal_strategy.dispatch(
@@ -688,6 +688,7 @@ class Buffer:
                 use_fp8=use_fp8,
                 use_mxfp4=use_mxfp4,
                 use_mxfp8=use_mxfp8 or (use_fp8 and use_ue8m0),
+                fallback_fp8_to_int8=True,
             )
 
         return self.low_latency_strategy.low_latency_dispatch(

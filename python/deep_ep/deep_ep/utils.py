@@ -91,23 +91,6 @@ def _resolve_quant_mode(
     return None
 
 
-def _resolve_low_latency_quant_mode(
-    use_fp8: bool,
-    use_mxfp4: bool,
-    use_mxfp8: bool,
-) -> Optional[str]:
-    """Resolve the effective ``quant_mode`` for low-latency dispatch.
-
-    ``use_ue8m0`` is handled by the caller as a legacy alias for MXFP8.
-    """
-    return _resolve_quant_mode(
-        use_fp8=use_fp8,
-        use_mxfp4=use_mxfp4,
-        use_mxfp8=use_mxfp8,
-        fallback_fp8_to_int8=True,
-    )
-
-
 def get_simplify_tensor(arg):
     if type(arg) in (tuple, list):
         return ", ".join([get_simplify_tensor(a) for a in arg])
@@ -182,16 +165,3 @@ def log_parameters(input_name_full_tensor=None, output_idx_full_tensor=None):
         return wrapper
 
     return log_parameters_decorator
-
-
-def _resolve_normal_quant_mode(
-    use_fp8: bool,
-    use_mxfp4: bool,
-    use_mxfp8: bool,
-) -> Optional[str]:
-    """Resolve the effective ``quant_mode`` for normal dispatch."""
-    return _resolve_quant_mode(
-        use_fp8=use_fp8,
-        use_mxfp4=use_mxfp4,
-        use_mxfp8=use_mxfp8,
-    )
