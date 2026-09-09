@@ -629,10 +629,10 @@ class Buffer:
         use_fp8: bool = True,
         round_scale: bool = False,
         use_ue8m0: bool = False,
-        use_mxfp4: bool = False,
         async_finish: bool = False,
         return_recv_hook: bool = False,
         topk_weights: Optional[torch.Tensor] = None,
+        use_mxfp4: bool = False,
         use_mxfp8: bool = False,
     ) -> Tuple[
         Tuple[torch.Tensor, torch.Tensor], torch.Tensor, Tuple, EventOverlap, Callable
@@ -684,11 +684,12 @@ class Buffer:
         """
         quant_mode = None
         if self.low_latency_strategy.get_name() == "default":
+            resolved_use_mxfp8 = use_mxfp8 or (use_fp8 and use_ue8m0)
+            resolved_use_fp8 = use_fp8 and not use_ue8m0
             quant_mode = _resolve_quant_mode(
-                use_fp8=use_fp8,
+                use_fp8=resolved_use_fp8,
                 use_mxfp4=use_mxfp4,
-                use_mxfp8=use_mxfp8 or (use_fp8 and use_ue8m0),
-                fallback_fp8_to_int8=True,
+                use_mxfp8=resolved_use_mxfp8,
             )
 
         return self.low_latency_strategy.low_latency_dispatch(
