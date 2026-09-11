@@ -371,8 +371,10 @@ class Buffer:
         # Default config
         config = self.get_dispatch_config(self.group_size) if config is None else config
 
-        # Resolve quant_mode from bool flags + device architecture
         quant_mode = _resolve_quant_mode(use_fp8, use_mxfp4, use_mxfp8)
+        if quant_mode is None:
+            is_quant_env = os.getenv("DEEP_NORMAL_MODE_USE_INT8_QUANT", "0")
+            quant_mode = "int8" if is_quant_env == "1" else "bf16"
 
         # Delegate to normal strategy
         return self.normal_strategy.dispatch(
