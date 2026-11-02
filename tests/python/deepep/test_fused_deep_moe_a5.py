@@ -47,6 +47,9 @@ MX_QUANT_CONFIGS = {
 # quantized weight dtype. The Python API still has a quant_mode slot, so keep a
 # fixed compatibility value here instead of treating it as a user-facing switch.
 FUSED_COMPAT_QUANT_MODE = 0
+NUM_TOKEN_JITTER_SEED = 2026
+SINGLE_ACTIVE_TOPK_SEED = 2026
+RANDOM_PROFILE_SEED = 2026
 
 FUSED_EVENT_PATTERNS = (("FusedDeepMoe", "aclnnFusedDeepMoe"),)
 SMALL_OP_EVENT_PATTERNS = (
@@ -143,33 +146,6 @@ def maybe_cast_weight_to_nz(
     return weight
 
 
-def log_quant_tensor(rank: int, enabled: bool, name: str, tensor: torch.Tensor):
-    if enabled and rank == 0:
-        print(
-            f"[quant-dtype] {name}: dtype={tensor.dtype}, shape={tuple(tensor.shape)}",
-            flush=True,
-        )
-
-
-def get_npu_format_desc(tensor: torch.Tensor) -> str:
-    format_code = torch_npu.get_npu_format(tensor)
-    format_name_map = {
-        2: "ND",
-        29: "FRACTAL_NZ",
-    }
-    format_name = format_name_map.get(format_code, f"UNKNOWN_{format_code}")
-    return f"{format_name}({format_code})"
-
-
-def log_tensor_meta(rank: int, enabled: bool, name: str, tensor: torch.Tensor):
-    if enabled and rank == 0:
-        print(
-            f"[tensor-meta] {name}: dtype={tensor.dtype}, shape={tuple(tensor.shape)}, "
-            f"format={get_npu_format_desc(tensor)}",
-            flush=True,
-        )
-
-
 def make_umdk_static_inputs(
     rank: int,
     world_size: int,
@@ -183,7 +159,7 @@ def make_umdk_static_inputs(
 
     x = torch.rand((local_num_tokens, args.hidden)).bfloat16().npu() * 2 - 1
     if args.single_active_rank is not None and local_num_tokens > 0:
-        topk_rng = random.Random(args.single_active_topk_seed + rank)
+        topk_rng = random.Random(SINGLE_ACTIVE_TOPK_SEED + rank)
         sampled_rows = [
             torch.tensor(
                 topk_rng.sample(range(args.num_experts), args.num_topk),
@@ -315,7 +291,7 @@ def make_random_profile_cases(
     cases = []
     total_case_count = args.num_warmups + args.num_tests
     for case_idx in range(total_case_count):
-        case_seed = args.random_profile_seed + case_idx * world_size + rank
+        case_seed = RANDOM_PROFILE_SEED + case_idx * world_size + rank
         torch_generator = torch.Generator(device="npu")
         torch_generator.manual_seed(case_seed)
         routing_rng = random.Random(case_seed)
@@ -802,13 +778,6 @@ def run_small_op_baseline(
         expand_scales,
     ) = outputs
 
-    if args.log_quant_dtypes and not getattr(args, "_small_quant_dtype_logged", False):
-        log_quant_tensor(rank, True, "dispatch.expand_x", expand_x)
-        log_quant_tensor(rank, True, "dispatch.dynamic_scales_raw", dynamic_scales)
-        log_quant_tensor(rank, True, "gmm1_weight_q", inputs["gmm1_weight_q"])
-        log_quant_tensor(rank, True, "gmm1_weight_scale", inputs["gmm1_weight_scale"])
-        log_tensor_meta(rank, True, "small_op.gmm1_weight_q", inputs["gmm1_weight_q"])
-
     if gmm_burn_in_repeats > 1 and warmup_burn_in_buffers is not None:
         # This burn-in only runs on the first profiler warmup iteration.
         # It does not change the routed output; it only inserts extra device
@@ -820,10 +789,6 @@ def run_small_op_baseline(
     dynamic_scales = dynamic_scales.view(*(dynamic_scales.shape[:-1]), -1, 2).view(
         torch.float8_e8m0fnu
     )
-    log_quant_tensor(
-        rank, args.log_quant_dtypes, "dispatch.dynamic_scales", dynamic_scales
-    )
-
     y1_fp = torch_npu.npu_grouped_matmul(
         x=[expand_x],
         weight=[inputs["gmm1_weight_q"]],
@@ -835,28 +800,16 @@ def run_small_op_baseline(
         group_list=expert_token_nums,
         output_dtype=output_dtype,
     )[0]
-    log_quant_tensor(rank, args.log_quant_dtypes, "gmm1.output", y1_fp)
     if args.activation == "situ":
         activation_out = situ_reference(y1_fp, args.beta, args.linear_beta)
     else:
         activation_out = torch_npu.npu_swiglu(y1_fp)
-    log_quant_tensor(
-        rank, args.log_quant_dtypes, f"{args.activation}.output", activation_out
-    )
-
     x2, x2_scale = torch_npu.npu_dynamic_mx_quant(
         activation_out, dst_type=quant_cfg["quant_dst_type"]
     )
     x2 = x2.view(quant_cfg["origin_dtype"])
 
     x2_scale = x2_scale.view(torch.float8_e8m0fnu)
-    log_quant_tensor(rank, args.log_quant_dtypes, "requant.x2", x2)
-    log_quant_tensor(rank, args.log_quant_dtypes, "requant.x2_scale", x2_scale)
-    if args.log_quant_dtypes and not getattr(
-        args, "_small_gmm2_weight_meta_logged", False
-    ):
-        log_tensor_meta(rank, True, "small_op.gmm2_weight_q", inputs["gmm2_weight_q"])
-        args._small_gmm2_weight_meta_logged = True
     y2_fp = torch_npu.npu_grouped_matmul(
         x=[x2],
         weight=[inputs["gmm2_weight_q"]],
@@ -868,9 +821,6 @@ def run_small_op_baseline(
         group_list=expert_token_nums,
         output_dtype=output_dtype,
     )[0]
-    log_quant_tensor(rank, args.log_quant_dtypes, "gmm2.output", y2_fp)
-    if args.log_quant_dtypes:
-        args._small_quant_dtype_logged = True
     output = torch_npu.npu_moe_distribute_combine_v2(
         expand_x=y2_fp,
         expert_ids=inputs["expert_ids"],
@@ -900,16 +850,7 @@ def run_buffer_fused(
     inputs: Dict[str, torch.Tensor],
     num_max_dispatch_tokens_per_rank: int,
     args: argparse.Namespace,
-    kernel_trace_dir: str = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
-    log_tensor_meta(
-        rank, args.log_quant_dtypes, "gmm1_weight_q", inputs["gmm1_weight_q"]
-    )
-    log_tensor_meta(
-        rank, args.log_quant_dtypes, "gmm2_weight_q", inputs["gmm2_weight_q"]
-    )
-
     output, ep_recv_count = buffer.fused_deep_moe(
         inputs["x"],
         inputs["expert_ids"],
@@ -921,44 +862,12 @@ def run_buffer_fused(
         num_max_dispatch_tokens_per_rank,
         args.num_experts,
         FUSED_COMPAT_QUANT_MODE,
-        profile_enable=kernel_trace_dir is not None,
+        profile_enable=False,
         activation=args.activation,
         beta=args.beta,
         linear_beta=args.linear_beta,
     )
     return output, ep_recv_count
-
-
-def run_buffer_fused_with_burn_in(
-    buffer: deep_ep.Buffer,
-    inputs: Dict[str, torch.Tensor],
-    num_max_dispatch_tokens_per_rank: int,
-    args: argparse.Namespace,
-    fused_burn_in_repeats: int = 1,
-    warmup_burn_in_buffers: Tuple[torch.Tensor, torch.Tensor] = None,
-    kernel_trace_dir: str = None,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    # The extra burn-in is only used for the first profiler warmup iteration.
-    # It intentionally stays on the same execution path as the fused op so the
-    # host has more time to enqueue the remaining fused iterations while this
-    # warmup is still occupying device time.
-    if fused_burn_in_repeats > 1 and warmup_burn_in_buffers is not None:
-        burn_in_lhs, burn_in_rhs = warmup_burn_in_buffers
-        for _ in range(fused_burn_in_repeats):
-            _ = torch.matmul(burn_in_lhs, burn_in_rhs)
-
-    return run_buffer_fused(
-        buffer,
-        inputs,
-        num_max_dispatch_tokens_per_rank,
-        args,
-        kernel_trace_dir=kernel_trace_dir,
-    )
-
-
-def format_triplet(name: str, values_us: Tuple[float, float, float]) -> str:
-    avg_us, min_us, max_us = values_us
-    return f"{name}: avg={avg_us:.2f} us, min={min_us:.2f} us, max={max_us:.2f} us"
 
 
 def summarize_profile_durations(durations_s) -> Tuple[float, float, float]:
@@ -978,33 +887,6 @@ def summarize_profile_breakdown(step_durations_s) -> List[Tuple[float, float, fl
         )
         for idx in range(step_durations_s.shape[1])
     ]
-
-
-def print_profile_match_debug(
-    rank: int, title: str, discovered_names, matched_sequences
-):
-    if rank != 0:
-        return
-    if matched_sequences:
-        print(f"{title} matched profiler event sequences:", flush=True)
-        for idx, sequence in enumerate(matched_sequences, start=1):
-            print(f"  [{idx}] {' -> '.join(sequence)}", flush=True)
-    else:
-        print(f"{title} discovered profiler events:", flush=True)
-        for name in discovered_names:
-            print(f"  - {name}", flush=True)
-
-
-def print_profile_iteration_debug(rank: int, title: str, debug_info):
-    if rank != 0:
-        return
-    print(
-        f"{title} profiler iterations: "
-        f"matched_total_iterations={debug_info['matched_total_iterations']}, "
-        f"dropped_warmup_iterations={debug_info['dropped_warmup_iterations']}, "
-        f"counted_iterations={debug_info['counted_iterations']}",
-        flush=True,
-    )
 
 
 def print_rank_skew_summary(gathered_small, gathered_small_breakdown, gathered_fused):
@@ -1088,11 +970,6 @@ def print_comm_overlap_rate(total_small_stats, total_fused_stats, mean_breakdown
         f"({dispatch_avg * 1e6:.2f} + {combine_avg * 1e6:.2f})) = {overlap_rate:.4f}",
         flush=True,
     )
-
-
-def build_trace_path(trace_dir: str, rank: int, tag: str) -> str:
-    os.makedirs(trace_dir, exist_ok=True)
-    return os.path.join(trace_dir, f"{tag}_rank{rank}.json")
 
 
 def format_stats_row(
@@ -1262,7 +1139,7 @@ def run_rank(local_rank: int, num_processes: int, args: argparse.Namespace):
             local_num_tokens = 1 if rank == args.single_active_rank else 0
         else:
             if args.num_token_jitter > 0:
-                token_jitter_rng = random.Random(args.num_token_jitter_seed + rank)
+                token_jitter_rng = random.Random(NUM_TOKEN_JITTER_SEED + rank)
                 token_delta = token_jitter_rng.randint(
                     -args.num_token_jitter, args.num_token_jitter
                 )
@@ -1326,7 +1203,7 @@ def run_rank(local_rank: int, num_processes: int, args: argparse.Namespace):
                 f"base_num_tokens={args.num_tokens}, "
                 f"single_active_rank={args.single_active_rank}, "
                 f"num_token_jitter={args.num_token_jitter}, "
-                f"num_token_jitter_seed={args.num_token_jitter_seed}, "
+                f"num_token_jitter_seed={NUM_TOKEN_JITTER_SEED}, "
                 f"per_rank_num_tokens={all_num_tokens}, "
                 f"padded_num_tokens={padded_num_tokens}, "
                 f"real_global_bs={real_global_bs}, "
@@ -1338,7 +1215,6 @@ def run_rank(local_rank: int, num_processes: int, args: argparse.Namespace):
                 f"weight_format={args.weight_format}, "
                 f"quant={args.quant}, activation={args.activation}, "
                 f"beta={args.beta}, linear_beta={args.linear_beta}, "
-                f"kernel_trace_dir={args.kernel_trace_dir}, "
                 f"num_warmups={args.num_warmups}, "
                 f"num_tests={args.num_tests}, "
                 f"small_first_warmup_gmm_burn_in_repeats={SMALL_FIRST_WARMUP_GMM_BURN_IN_REPEATS}",
@@ -1364,7 +1240,7 @@ def run_rank(local_rank: int, num_processes: int, args: argparse.Namespace):
                 ]
                 print(
                     "Randomized single-active topk: "
-                    f"seed={args.single_active_topk_seed}, "
+                    f"seed={SINGLE_ACTIVE_TOPK_SEED}, "
                     f"active_token_topk_experts={active_topk_experts}, "
                     f"active_token_topk_ranks={active_topk_ranks}",
                     flush=True,
@@ -1565,16 +1441,11 @@ def run_rank(local_rank: int, num_processes: int, args: argparse.Namespace):
             if rank == 0:
                 print(
                     f"{'Fixed' if args.fixed_profile_cases else 'Random'} profile cases prepared: "
-                    f"count={len(profile_cases)}, seed={args.random_profile_seed}",
+                    f"count={len(profile_cases)}, seed={RANDOM_PROFILE_SEED}",
                     flush=True,
                 )
 
         if True:
-            small_trace_path = (
-                build_trace_path(args.trace_dir, rank, "small_op")
-                if args.trace_dir is not None
-                else None
-            )
             small_profile_call_idx = 0
 
             def small_profile_fn():
@@ -1611,23 +1482,18 @@ def run_rank(local_rank: int, num_processes: int, args: argparse.Namespace):
             (
                 small_durations,
                 small_event_names,
-                small_matched_sequences,
+                _,
                 small_step_durations,
-                small_debug_info,
+                _,
             ) = profile_npu_event_sequences(
                 small_profile_fn,
                 SMALL_OP_EVENT_PATTERNS,
                 num_warmups=args.num_warmups,
                 num_tests=args.num_tests,
                 suppress_kineto_output=True,
-                trace_path=small_trace_path,
-                allow_no_match=args.dump_profile_events,
+                trace_path=None,
+                allow_no_match=False,
             )
-            if args.dump_profile_events:
-                print_profile_iteration_debug(rank, "small-op", small_debug_info)
-                print_profile_match_debug(
-                    rank, "small-op", small_event_names, small_matched_sequences
-                )
             if len(small_durations) == 0:
                 raise AssertionError(
                     "No matched NPU event sequence found for small-op. "
@@ -1639,22 +1505,7 @@ def run_rank(local_rank: int, num_processes: int, args: argparse.Namespace):
         dist.barrier()
 
         if True:
-            fused_trace_path = (
-                build_trace_path(args.trace_dir, rank, "fused")
-                if args.trace_dir is not None
-                else None
-            )
             fused_profile_call_idx = 0
-
-            if args.kernel_trace_dir is not None:
-                print(
-                    f"[rank{rank}] begin fused kernel profiling: "
-                    f"trace_dir={args.kernel_trace_dir}, warmups={args.num_warmups}, tests={args.num_tests}",
-                    flush=True,
-                )
-                buffer.runtime.begin_profile(
-                    args.num_warmups, args.num_tests, args.kernel_trace_dir
-                )
 
             def fused_profile_fn():
                 nonlocal fused_profile_call_idx
@@ -1676,51 +1527,34 @@ def run_rank(local_rank: int, num_processes: int, args: argparse.Namespace):
                 )
                 fused_profile_call_idx += 1
                 result = run_buffer_fused(
-                    buffer,
-                    profile_inputs,
-                    padded_num_tokens,
-                    args,
-                    kernel_trace_dir=args.kernel_trace_dir,
+                    buffer, profile_inputs, padded_num_tokens, args
                 )
                 if profile_cases is not None:
                     fused_profile_results.append(result)
                 return result
 
-            try:
-                (
-                    fused_durations,
-                    fused_event_names,
-                    fused_matched_sequences,
-                    _,
-                    fused_debug_info,
-                ) = profile_npu_event_sequences(
-                    fused_profile_fn,
-                    FUSED_EVENT_PATTERNS,
-                    num_warmups=args.num_warmups,
-                    num_tests=args.num_tests,
-                    suppress_kineto_output=True,
-                    trace_path=fused_trace_path,
-                    allow_no_match=args.dump_profile_events,
+            (
+                fused_durations,
+                fused_event_names,
+                _,
+                _,
+                _,
+            ) = profile_npu_event_sequences(
+                fused_profile_fn,
+                FUSED_EVENT_PATTERNS,
+                num_warmups=args.num_warmups,
+                num_tests=args.num_tests,
+                suppress_kineto_output=True,
+                trace_path=None,
+                allow_no_match=False,
+            )
+            if len(fused_durations) == 0:
+                raise AssertionError(
+                    "No matched NPU event sequence found for fused. "
+                    f"Patterns={FUSED_EVENT_PATTERNS}. "
+                    f"Discovered events={fused_event_names}"
                 )
-                if args.dump_profile_events:
-                    print_profile_iteration_debug(rank, "fused", fused_debug_info)
-                    print_profile_match_debug(
-                        rank, "fused", fused_event_names, fused_matched_sequences
-                    )
-                if len(fused_durations) == 0:
-                    raise AssertionError(
-                        "No matched NPU event sequence found for fused. "
-                        f"Patterns={FUSED_EVENT_PATTERNS}. "
-                        f"Discovered events={fused_event_names}"
-                    )
-                fused_stats = summarize_profile_durations(fused_durations)
-            finally:
-                if args.kernel_trace_dir is not None:
-                    print(
-                        f"[rank{rank}] end fused kernel profiling: trace_dir={args.kernel_trace_dir}",
-                        flush=True,
-                    )
-                    buffer.runtime.end_profile()
+            fused_stats = summarize_profile_durations(fused_durations)
         dist.barrier()
 
         if profile_cases is not None:
@@ -1887,21 +1721,9 @@ def main():
         help="Optional per-rank symmetric integer jitter applied to --num-tokens before generating inputs.",
     )
     parser.add_argument(
-        "--num-token-jitter-seed",
-        type=int,
-        default=2026,
-        help="Base seed used to derive deterministic per-rank token jitter.",
-    )
-    parser.add_argument(
         "--single-active-rank",
         type=int,
         help="Optional special-case mode: only this rank uses 1 real token and every other rank uses 0 tokens.",
-    )
-    parser.add_argument(
-        "--single-active-topk-seed",
-        type=int,
-        default=2026,
-        help="Base seed used to generate randomized global topk experts in --single-active-rank mode.",
     )
     parser.add_argument(
         "--hidden",
@@ -1956,12 +1778,6 @@ def main():
         ),
     )
     parser.add_argument(
-        "--random-profile-seed",
-        type=int,
-        default=2026,
-        help="Base seed for deterministic per-iteration randomized profiler inputs.",
-    )
-    parser.add_argument(
         "--fixed-profile-cases",
         action="store_true",
         help=(
@@ -1980,26 +1796,6 @@ def main():
         choices=("ND", "NZ"),
         default="ND",
         help="Storage format for quantized GMM weights.",
-    )
-    parser.add_argument(
-        "--trace-dir",
-        help="Optional directory to export profiler chrome traces.",
-    )
-    parser.add_argument(
-        "--kernel-trace-dir",
-        help="Optional directory to export A5 fused kernel traceEvents JSON files.",
-    )
-    parser.add_argument(
-        "--log-quant-dtypes",
-        action="store_true",
-        help="Print dtype/shape of key quantized tensors on rank0 during the first small-op run.",
-    )
-    parser.add_argument(
-        "--dump-profile-events",
-        "--debug",
-        dest="dump_profile_events",
-        action="store_true",
-        help="Print matched profiler iterations and discovered event names for debugging.",
     )
     parser.add_argument(
         "--print-per-rank-profile",
@@ -2065,8 +1861,6 @@ def main():
         parser.error("--num-warmups must be non-negative")
     if args.num_tests <= 0:
         parser.error("--num-tests must be positive")
-    if args.random_profile_seed < 0:
-        parser.error("--random-profile-seed must be non-negative")
     if args.random_profile_cases and args.fixed_profile_cases:
         parser.error(
             "--random-profile-cases and --fixed-profile-cases are mutually exclusive"
