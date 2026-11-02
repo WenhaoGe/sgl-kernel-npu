@@ -1,121 +1,96 @@
-# 合并 A3/A5 FusedDeepMoe 测试文件
+# FusedDeepMoe 测试按算子合并方案
 
 ## Story名称
 
-合并 A3/A5 FusedDeepMoe 测试入口并清理无效代码
+合并 A3/A5 FusedDeepMoe 测试入口。
 
 ## Story描述
 
-当前 A3 和 A5 的 FusedDeepMoe 测试分别位于 `test_fused_deep_moe.py` 和 `test_fused_deep_moe_a5.py`。两个文件各自维护命令行入口、进程启动、权重构造、参考实现、正确性检查和性能统计，测试入口分散，且存在未被调用的历史代码。
+目前 A3 和 A5 的 FusedDeepMoe 测试放在两个文件里，入口和参数解析分别维护。这个方案把 A5 测试合入 `test_fused_deep_moe.py`，通过现有 `--quant` 参数选择执行路径，减少一个测试入口。
 
-本 Story 计划将 A5 实现合并到 `test_fused_deep_moe.py`，通过现有 `--quant` 参数自动识别测试平台：`fp8_e4m3`/`fp8_e5m2`（MXFP8）或 `fp4_e2m1`（MXFP4）使用 A5，未显式提供 `--quant` 时使用 A3，不再增加 `--platform`。合并后删除原 A5 文件，并同步修改 CI、跨文件 import 和相关文档引用。
+A3、A5 的权重、baseline、通信 Buffer 和计时实现各自保留，原有输入、参数默认值、随机种子、精度阈值和测试覆盖不变。`test_dispatch_ffn_combine.py` 和 `test_mega_moe.py` 仍单独维护。
 
-本次只统一测试文件和入口，不统一 A3/A5 的算法实现。除已明确删除的 trace、量化日志和 profile debug 选项外，两个平台原有的输入形式、通信 Buffer、量化方式、权重布局、baseline、精度阈值和默认性能统计行为均保持不变，也不顺带调整 SiTU 的性能测试范围。
+## 功能点名称
 
-## 功能点分解
+1. 合并测试入口。
+2. 保留 A3/A5 各自的执行逻辑。
+3. 清理无用函数和 import。
+4. 更新跨文件依赖、CI 和文档。
 
-### 功能点名称
+## 功能点描述
 
-1. 统一 A3/A5 命令行入口
-2. 合并 A3/A5 测试实现
-3. 清理未调用代码
-4. 兼容跨文件依赖
-5. 更新 CI 与文档引用
-
-### 功能点描述
-
-1. **统一 A3/A5 命令行入口**：根据现有 `--quant` 参数自动识别平台，显式指定 MXFP8/MXFP4 对应值时进入 A5，未提供时进入 A3；按平台保留原参数默认值、专属参数和校验规则，最终分别启动 A3 `test_loop` 或 A5 `run_rank`。
-2. **合并 A3/A5 测试实现**：将 A5 的常量、输入与权重构造、small-op baseline、融合调用、正确性检查、profiling 和统计函数并入 A3 文件，平台专属逻辑仍分节独立维护。A5 dtype 在实际使用时解析，模块导入阶段不访问 MXFP 专属属性；增加“缺少 MXFP 属性时仍能导入 A3 公共接口”的检查。
-3. **清理未调用代码**：删除原有无直接、间接或跨文件调用的函数，以及固定默认行为后失去调用方的辅助函数，并清理合并后不再使用的 import；条件调用、函数对象间接调用和跨文件导入的函数不在清理范围内。
-4. **兼容跨文件依赖**：保留 `init_base_weights`、`init_fused_weights_int8` 和 `run_small_op_baseline` 的名称及签名；将 MegaMoe 对 A5 文件的 import 改为从合并文件导入。
-5. **更新 CI 与文档引用**：A3 命令不传 `--quant`，保持兼容；A5 命令切换到合并文件并显式设置 `--quant fp8_e4m3`、`--quant fp8_e5m2` 或 `--quant fp4_e2m1`，同时更新 README 和相关设计文档中的文件路径。
+1. 不传 `--quant` 时运行 A3；传入 `fp8_e4m3`、`fp8_e5m2` 或 `fp4_e2m1` 时运行 A5。不增加 `--platform`，非法量化值直接报错。
+2. A3 继续运行 `test_loop`，A5 继续运行 `run_rank`。两条路径使用自己的权重、baseline 和性能统计。A5 dtype 在实际使用时解析，避免影响 A3 模块导入。
+3. 删除 A3 中没有调用的 `make_uniform_topk_idx`、`from_inclusive_prefix_sum`、`str_to_bool`。A5 已删除的 trace、量化日志和 profile debug 选项及辅助函数不再迁回。
+4. 保留其他测试使用的公共函数，将共享 A5 MC2 baseline 移至 `utils.py`，使 FusedDeepMoe 和 MegaMoe 都从工具模块导入，不再相互依赖。A5 CI 命令替换文件路径并补上 `--quant`；A3 命令和 generalization 脚本保持原样。
 
 ## 功能实现思路
 
-1. **先识别平台，再构造参数解析器**
-   使用轻量预解析器读取现有 `--quant` 参数：`fp8_e4m3`/`fp8_e5m2` 对应 MXFP8，`fp4_e2m1` 对应 MXFP4，均判定为 A5；未提供 `--quant` 时判定为 A3。随后调用 `build_parser(platform)` 构造对应平台的完整 parser。
+先用预解析器读取 `--quant`，再构造对应平台的 parser。这样能保留两套默认值，也能拒绝另一平台的专属参数。
 
-2. **保留平台独立执行链路**
-   A3 继续执行 `test_loop → test → baseline_test/fused_deep_moe`；A5 继续执行 `run_rank → run_small_op_baseline/run_buffer_fused`。不为了代码复用而强行统一权重、baseline 或 profiler。
+迁移 A5 实现时按原来的调用关系搬移，不同时重写权重或 baseline。A3 代码放在前面，A5 代码放在后面，文件末尾统一保留 `main()`。
 
-3. **按静态调用关系清理死代码**
-   只删除确认未被调用的函数。`make_random_profile_cases` 和 `make_fixed_profile_cases` 虽通过 `case_builder` 间接调用，但仍是有效代码，必须保留。
+清理函数前同时检查直接调用、函数对象引用和跨文件 import。`make_random_profile_cases`、`make_fixed_profile_cases` 通过 `case_builder` 调用，需要保留。
 
-4. **先迁移引用，再删除旧文件**
-   保留其他测试依赖的公共函数名称和签名，先更新 `test_mega_moe.py`、CI 和文档，再删除 `test_fused_deep_moe_a5.py`，避免产生临时不可用的引用。
-
-5. **保持默认测试行为不变**
-   不修改量化模式、数值阈值、profiler 事件匹配和输出校验。固定随机种子仍使用原默认值 2026；trace、量化日志和 profile debug 选项按已完成的 A5 清理保持删除。A5 SiTU 仍在普通模式完成正确性检查后返回，`--event-timing` 时仍只进行 fused 单独计时。
+先更新依赖和执行命令，再删除旧 A5 文件。核对合并前后的默认参数、公共接口和执行路径，确认现有测试覆盖没有减少。只处理当前工作树，不修改嵌套镜像目录。
 
 ## 功能实现设计
 
 ### 代码设计
 
-#### 1. 合并后的模块结构
-
-文件：`tests/python/deepep/test_fused_deep_moe.py`
-
-```text
-公共 import 与公共配置
-A3 权重、路由、baseline、test、test_loop
-A5 量化配置、输入与权重、small-op baseline、fused 调用
-A5 正确性检查、profiling、统计和 run_rank
-build_parser(platform)
-main()
-```
-
-保留以下跨文件公共接口：
-
-- `init_base_weights(...)`
-- `init_fused_weights_int8(...)`
-- `run_small_op_baseline(...)`
-
-导入兼容性检查：模拟 `torch` 或 `torch_npu` 缺少 MXFP dtype 属性的环境，确认仍能从合并文件导入 `init_base_weights` 和 `init_fused_weights_int8`，且导入过程不触发 A5 dtype 解析。实际执行 A5 量化路径时再检查所需 dtype 是否可用。
-
-#### 2. 统一入口设计
+合并后的 A3/A5 测试实现放在 `tests/python/deepep/test_fused_deep_moe.py`，两个算子共用的 A5 MC2 baseline 放在 `utils.py`，入口如下：
 
 ```text
 main()
-  → 预解析 --quant：MXFP8/MXFP4 对应值 → A5，其他 → A3
+  → 预解析 --quant
   → build_parser(platform)
-      → 注册该平台的公共参数、专属参数和原默认值
-  → 执行平台专属参数归一化与校验
-  → a3：spawn(test_loop, ...)
-  → a5：spawn(run_rank, ...)
+  → 解析并校验该平台参数
+  → A3：spawn(test_loop, ...)
+  → A5：spawn(run_rank, ...)
 ```
 
-#### 3. 死代码清理设计
+预解析器关闭 help，完整 parser 负责 help 和参数校验。A3 的 `--debug` 仍写入 `args.debug`；SiTU、shape 和 A5 性能参数只在 A5 路径处理。
 
-| 原文件 | 删除函数 | 删除依据 |
-|---|---|---|
-| A3 | `make_uniform_topk_idx` | 当前无直接、间接或跨文件调用 |
-| A3 | `from_inclusive_prefix_sum` | 当前无直接、间接或跨文件调用 |
-| A3 | `str_to_bool` | 当前无直接、间接或跨文件调用 |
-| A5 | `run_buffer_fused_with_burn_in` | 当前无直接、间接或跨文件调用，已删除 |
-| A5 | `format_triplet` | 当前无直接、间接或跨文件调用，已删除 |
-| A5 | `log_quant_tensor`、`get_npu_format_desc`、`log_tensor_meta` | 删除 `--log-quant-dtypes` 后无调用，已删除 |
-| A5 | `print_profile_match_debug`、`print_profile_iteration_debug` | 删除 `--dump-profile-events` 后无调用，已删除 |
-| A5 | `build_trace_path` | 删除 `--trace-dir` 后无调用，已删除 |
-
-合并后再检查并删除仅被上述函数使用的 import，不扩大为通用重构。
-
-#### 4. 文件改造设计
-
-| 文件 | 设计修改 |
+| 参数 | 执行路径 |
 |---|---|
-| `tests/python/deepep/test_fused_deep_moe.py` | 合并 A5 实现，增加统一 parser 和 `main()`，清理死代码 |
-| `tests/python/deepep/test_fused_deep_moe_a5.py` | 引用迁移完成后删除 |
-| `tests/python/deepep/test_mega_moe.py` | 将 `run_small_op_baseline` 改为从 `test_fused_deep_moe` 导入 |
-| `tests/python/deepep/test_normal_and_fused_deep_moe.py` | 不修改，继续依赖合并文件中的原 A3 公共函数 |
-| `.github/workflows/pr-test-deepep-npu.yml` | A3 命令不变；A5 命令改用合并文件，并保留或显式补充 `--quant fp8_e4m3` / `--quant fp4_e2m1` 等现有参数 |
-| `scripts/generalization_test_fused_deep_moe.sh` | 不修改，利用默认 `a3` 保持兼容 |
-| `python/deep_ep/README.md` | 更新 A5 测试文件和平台参数说明 |
-| `docs/design_a5_megamoe_param_adaptation.md` | 更新旧 A5 文件路径及调用示例 |
+| 不传 `--quant` | A3 |
+| `--quant fp8_e4m3`、`--quant fp8_e5m2` | A5 MXFP8 |
+| `--quant fp4_e2m1` | A5 MXFP4 |
+| 其他值 | 参数报错 |
 
-#### 5. 行为边界
+FusedDeepMoe 文件保留两个公共接口，名称和签名不变：`init_base_weights(...)`、`init_fused_weights_int8(...)`。`run_small_op_baseline(...)` 移至 `utils.py`，名称和签名同样保持不变。
 
-- 最终只保留一个物理测试文件，不增加 A5 兼容 wrapper。
-- 使用现有 `--quant` 识别平台：MXFP8/MXFP4 对应值为 A5，未提供时为 A3；不增加 `--platform`、重复的 `quant_mode` 参数或设备自动探测。
-- 不统一 A3/A5 的通信 Buffer 创建方式、权重布局、量化参数和第二返回值语义。
-- 不修改任何精度阈值、性能事件模式或 SiTU 覆盖范围。
-- 只修改当前工作树根目录文件，不处理嵌套镜像目录中的同名副本。
+`test_fused_deep_moe.py` 和 `utils.py` 均不在模块加载时解析 MXFP dtype。增加导入检查：模拟 `torch` 或 `torch_npu` 缺少 MXFP 属性，确认仍能导入 `utils` 及 A3 的两个权重接口；执行 A5 时再检查所需 dtype 是否可用。
+
+A3 继续走 `test_loop → test → baseline_test / fused_deep_moe`，A5 继续走 `run_rank → run_small_op_baseline / run_buffer_fused`。两套第二返回值的含义保持不变。
+
+### 共享 A5 MC2 baseline
+
+`utils.py` 接收 `run_small_op_baseline`、`get_mx_quant_config`、量化配置解析以及 FusedDeepMoe 专用的 SiTU reference。量化配置在实际调用时构造，parser 的 `choices` 使用独立的量化模式名称常量，不能通过实例化包含 MXFP dtype 的配置表获取。
+
+FusedDeepMoe 的 `situ_reference` 迁移后命名为 `fused_situ_reference`，继续保持 `exp/add/div` 的运算顺序和 `beta=None` 语义。MegaMoe 现有的同名函数使用 `torch.sigmoid` 且参数约定不同，必须保留在原文件中，不与 FusedDeepMoe 版本合并。
+
+FusedDeepMoe 和 MegaMoe 均从 `utils` 导入 `run_small_op_baseline`，删除 MegaMoe 对 FusedDeepMoe 测试模块的延迟 import。此次移动只改变共享代码位置，不修改 MC2 算子调用顺序、权重转置、计数返回值或性能统计口径。
+
+SwiGLU 沿用原 profiler 事件、预热和统计方式。A5 SiTU 普通模式完成正确性检查后返回，指定 `--event-timing` 时只测 fused 调用。本次不扩展 SiTU 的性能范围。
+
+需要修改的文件如下，表中的测试文件均位于 `tests/python/deepep/`：
+
+| 文件 | 修改内容 |
+|---|---|
+| `test_fused_deep_moe.py` | 合入 A5 实现，整理 parser 和 `main()`，从 `utils` 调用共享 A5 baseline |
+| `test_fused_deep_moe_a5.py` | 引用迁移后删除，不保留兼容 wrapper |
+| `test_mega_moe.py` | 从 `utils` 导入 `run_small_op_baseline`，移除对 FusedDeepMoe 测试模块的依赖 |
+| `test_normal_and_fused_deep_moe.py` | 保持原 import 和调用方式 |
+| `utils.py` | 接收共享 A5 MC2 baseline、量化配置解析和 FusedDeepMoe 专用 SiTU reference |
+| `.github/workflows/pr-test-deepep-npu.yml` | A3 命令保留；A5 替换路径并显式传入 `--quant` |
+| `scripts/generalization_test_fused_deep_moe.sh` | 保持原命令 |
+| `python/deep_ep/README.md` | 更新 A5 测试命令 |
+| `docs/design_a5_megamoe_param_adaptation.md` | 更新路径、示例和 SiTU 行为说明 |
+
+A5 命令改为下面的形式，原来依赖默认 FP8 的命令也要补上 `--quant`：
+
+```bash
+python3 tests/python/deepep/test_fused_deep_moe.py \
+  --num-processes 4 --quant fp8_e4m3 --num-warmups 5 --num-tests 30
+```
