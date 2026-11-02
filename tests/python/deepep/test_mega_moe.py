@@ -62,19 +62,6 @@ def summarize_value(value) -> str:
     return f"{type(value).__name__}({value})"
 
 
-def set_env_if_provided(name: str, value):
-    if value is not None:
-        os.environ[name] = str(value)
-
-
-def apply_runtime_env_from_args(args: argparse.Namespace):
-    set_env_if_provided("MASTER_ADDR", args.master_addr)
-    set_env_if_provided("MASTER_PORT", args.master_port)
-    set_env_if_provided("WORLD_SIZE", args.num_servers)
-    set_env_if_provided("RANK", args.server_index)
-    set_env_if_provided("HCCL_BUFFSIZE", args.hccl_buffsize)
-
-
 def parse_csv_list(raw: str) -> List[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
@@ -264,12 +251,14 @@ def convert_cumsum_group_list_to_count(group_list: torch.Tensor) -> torch.Tensor
     return torch.cat([group_list[:1], torch.diff(group_list, dim=0)])
 
 
-def build_scene_weight_source(
+def prepare_w4a8_weights(
     hidden: int,
     intermediate_hidden: int,
     num_local_experts: int,
     device: torch.device,
-) -> dict:
+    include_baseline: bool,
+) -> tuple[dict, dict]:
+    source_device = torch.device("cpu")
     new_quant_version = True
 
     # Generate logical int4 weights in int8 containers first. These tensors are
@@ -279,22 +268,22 @@ def build_scene_weight_source(
         8,
         (num_local_experts, hidden, 2 * intermediate_hidden),
         dtype=torch.int8,
-        device=device,
+        device=source_device,
     )
     w2_weight_raw_int4 = torch.randint(
         -8,
         8,
         (num_local_experts, intermediate_hidden, hidden),
         dtype=torch.int8,
-        device=device,
+        device=source_device,
     )
     w13_weight_scale = torch.empty(
         (num_local_experts, 2 * intermediate_hidden),
         dtype=torch.float32,
-        device=device,
+        device=source_device,
     ).uniform_(0.01, 0.1)
     w2_weight_scale = torch.empty(
-        (num_local_experts, 1, hidden), dtype=torch.float32, device=device
+        (num_local_experts, 1, hidden), dtype=torch.float32, device=source_device
     ).uniform_(0.01, 0.1)
     w13_weight_packed_int8 = pack_int4_experts_to_int8(w13_weight_raw_int4)
     w2_weight_packed_int8 = pack_int4_experts_to_int8(w2_weight_raw_int4)
@@ -366,7 +355,7 @@ def build_scene_weight_source(
             f"Invalid computed w2 bias shape: got {tuple(w2_bias.shape)}, "
             f"expected {expected_w2_bias_shape}."
         )
-    return {
+    source = {
         "hidden": hidden,
         "intermediate_hidden": intermediate_hidden,
         "num_local_experts": num_local_experts,
@@ -380,41 +369,32 @@ def build_scene_weight_source(
         "w13_bias": w13_bias,
         "w2_bias": w2_bias,
     }
-
-
-def build_baseline_scene_weights(source: dict, device: torch.device) -> dict:
-    new_quant_version = source["new_quant_version"]
-
-    w13_weight_baseline_nz = torch_npu.npu_format_cast(
-        source["w13_weight_packed_int8"].to(device), ACL_FORMAT_FRACTAL_NZ
-    )
-    w2_weight_baseline_nz = torch_npu.npu_format_cast(
-        source["w2_weight_packed_int8"].to(device), ACL_FORMAT_FRACTAL_NZ
-    )
-    w13_weight_packed_stacked = pack_to_int32(
-        w13_weight_baseline_nz, new_quant_version=new_quant_version
-    )
-    w2_weight_packed_stacked = pack_to_int32(
-        w2_weight_baseline_nz, new_quant_version=new_quant_version
-    )
-
-    return {
-        "baseline_l1_weight_stacked": [w13_weight_packed_stacked],
-        "baseline_l2_weight_stacked": [w2_weight_packed_stacked],
-        "baseline_l1_scale_stacked": [
-            source["w13_scale_int64"].to(device).unsqueeze(1).contiguous()
-        ],
-        "baseline_l2_scale_stacked": [source["w2_scale_int64"].to(device).contiguous()],
-        "baseline_l1_bias_stacked": [source["w13_bias"].to(device).contiguous()],
-        "baseline_l2_bias_stacked": [source["w2_bias"].to(device).contiguous()],
-    }
-
-
-def build_fused_scene_weights(source: dict, device: torch.device) -> dict:
-    hidden = source["hidden"]
-    intermediate_hidden = source["intermediate_hidden"]
-    num_local_experts = source["num_local_experts"]
-    new_quant_version = source["new_quant_version"]
+    weights = {}
+    if include_baseline:
+        w13_weight_baseline_nz = torch_npu.npu_format_cast(
+            w13_weight_packed_int8.to(device), ACL_FORMAT_FRACTAL_NZ
+        )
+        w2_weight_baseline_nz = torch_npu.npu_format_cast(
+            w2_weight_packed_int8.to(device), ACL_FORMAT_FRACTAL_NZ
+        )
+        w13_weight_packed_stacked = pack_to_int32(
+            w13_weight_baseline_nz, new_quant_version=new_quant_version
+        )
+        w2_weight_packed_stacked = pack_to_int32(
+            w2_weight_baseline_nz, new_quant_version=new_quant_version
+        )
+        weights.update(
+            {
+                "baseline_l1_weight_stacked": [w13_weight_packed_stacked],
+                "baseline_l2_weight_stacked": [w2_weight_packed_stacked],
+                "baseline_l1_scale_stacked": [
+                    w13_scale_int64.to(device).unsqueeze(1).contiguous()
+                ],
+                "baseline_l2_scale_stacked": [w2_scale_int64.to(device).contiguous()],
+                "baseline_l1_bias_stacked": [w13_bias.to(device).contiguous()],
+                "baseline_l2_bias_stacked": [w2_bias.to(device).contiguous()],
+            }
+        )
 
     fused_l1_weights = [
         pack_to_int32(
@@ -423,7 +403,7 @@ def build_fused_scene_weights(source: dict, device: torch.device) -> dict:
             ),
             new_quant_version=new_quant_version,
         )
-        for weight in source["w13_weight_packed_int8"].unbind(dim=0)
+        for weight in w13_weight_packed_int8.unbind(dim=0)
     ]
     fused_l2_weights = [
         pack_to_int32(
@@ -432,23 +412,21 @@ def build_fused_scene_weights(source: dict, device: torch.device) -> dict:
             ),
             new_quant_version=new_quant_version,
         )
-        for weight in source["w2_weight_packed_int8"].unbind(dim=0)
+        for weight in w2_weight_packed_int8.unbind(dim=0)
     ]
     fused_l1_scales = [
         scale.to(device).reshape(-1).view(torch.uint64)
-        for scale in source["w13_scale_int64"].unbind(dim=0)
+        for scale in w13_scale_int64.unbind(dim=0)
     ]
     fused_l2_scales = [
         scale.to(device).reshape(-1).view(torch.uint64)
-        for scale in source["w2_scale_int64"].unbind(dim=0)
+        for scale in w2_scale_int64.unbind(dim=0)
     ]
     fused_l1_bias = [
-        bias.to(device).reshape(-1).to(torch.float32)
-        for bias in source["w13_bias"].unbind(dim=0)
+        bias.to(device).reshape(-1).to(torch.float32) for bias in w13_bias.unbind(dim=0)
     ]
     fused_l2_bias = [
-        bias.to(device).reshape(-1).to(torch.float32)
-        for bias in source["w2_bias"].unbind(dim=0)
+        bias.to(device).reshape(-1).to(torch.float32) for bias in w2_bias.unbind(dim=0)
     ]
 
     expected_l1_shape = (hidden, (2 * intermediate_hidden) // 8)
@@ -481,22 +459,27 @@ def build_fused_scene_weights(source: dict, device: torch.device) -> dict:
     ):
         raise ValueError("Fused bias list length mismatch.")
 
-    return {
-        "fused_l1_weights": fused_l1_weights,
-        "fused_l2_weights": fused_l2_weights,
-        "fused_l1_scales": fused_l1_scales,
-        "fused_l2_scales": fused_l2_scales,
-        "fused_l1_bias": fused_l1_bias,
-        "fused_l2_bias": fused_l2_bias,
-    }
+    weights.update(
+        {
+            "fused_l1_weights": fused_l1_weights,
+            "fused_l2_weights": fused_l2_weights,
+            "fused_l1_scales": fused_l1_scales,
+            "fused_l2_scales": fused_l2_scales,
+            "fused_l1_bias": fused_l1_bias,
+            "fused_l2_bias": fused_l2_bias,
+        }
+    )
+    return source, weights
 
 
-def build_w8a8_scene_weight_source(
+def prepare_w8a8_weights(
     hidden: int,
     intermediate_hidden: int,
     num_local_experts: int,
     device: torch.device,
-) -> dict:
+    include_baseline: bool,
+) -> tuple[dict, dict]:
+    source_device = torch.device("cpu")
     # Cover the signed INT8 range used by per-channel W8 quantization. The chosen
     # scales keep the resulting BF16 activations in a practical numerical range.
     w13_weight_raw_int8 = torch.randint(
@@ -504,28 +487,28 @@ def build_w8a8_scene_weight_source(
         128,
         (num_local_experts, hidden, 2 * intermediate_hidden),
         dtype=torch.int8,
-        device=device,
+        device=source_device,
     )
     w2_weight_raw_int8 = torch.randint(
         -127,
         128,
         (num_local_experts, intermediate_hidden, hidden),
         dtype=torch.int8,
-        device=device,
+        device=source_device,
     )
     w13_weight_scale = torch.empty(
         (num_local_experts, 2 * intermediate_hidden),
         dtype=torch.float32,
-        device=device,
+        device=source_device,
     ).uniform_(0.0015, 0.0019)
     w2_weight_scale = torch.empty(
         (num_local_experts, 1, hidden),
         dtype=torch.float32,
-        device=device,
+        device=source_device,
     ).uniform_(0.0015, 0.0019)
     w13_scale_uint64 = pack_scale_to_uint64(w13_weight_scale)
     w2_scale_uint64 = pack_scale_to_uint64(w2_weight_scale)
-    return {
+    source = {
         "hidden": hidden,
         "intermediate_hidden": intermediate_hidden,
         "num_local_experts": num_local_experts,
@@ -536,49 +519,38 @@ def build_w8a8_scene_weight_source(
         "w13_scale_uint64": w13_scale_uint64,
         "w2_scale_uint64": w2_scale_uint64,
     }
-
-
-def build_w8a8_baseline_scene_weights(source: dict, device: torch.device) -> dict:
-    w13_weight_baseline_nz = torch_npu.npu_format_cast(
-        source["w13_weight_raw_int8"].to(device), ACL_FORMAT_FRACTAL_NZ
-    )
-    w2_weight_baseline_nz = torch_npu.npu_format_cast(
-        source["w2_weight_raw_int8"].to(device), ACL_FORMAT_FRACTAL_NZ
-    )
-    return {
-        "baseline_l1_weight_stacked": [w13_weight_baseline_nz],
-        "baseline_l2_weight_stacked": [w2_weight_baseline_nz],
-        "baseline_l1_scale_stacked": [
-            source["w13_weight_scale"].to(device).contiguous()
-        ],
-        "baseline_l2_scale_stacked": [
-            source["w2_weight_scale"].to(device).contiguous()
-        ],
-        "baseline_l1_bias_stacked": None,
-        "baseline_l2_bias_stacked": None,
-    }
-
-
-def build_w8a8_fused_scene_weights(source: dict, device: torch.device) -> dict:
-    hidden = source["hidden"]
-    intermediate_hidden = source["intermediate_hidden"]
-    num_local_experts = source["num_local_experts"]
+    weights = {}
+    if include_baseline:
+        w13_weight_baseline_nz = torch_npu.npu_format_cast(
+            w13_weight_raw_int8.to(device), ACL_FORMAT_FRACTAL_NZ
+        )
+        w2_weight_baseline_nz = torch_npu.npu_format_cast(
+            w2_weight_raw_int8.to(device), ACL_FORMAT_FRACTAL_NZ
+        )
+        weights.update(
+            {
+                "baseline_l1_weight_stacked": [w13_weight_baseline_nz],
+                "baseline_l2_weight_stacked": [w2_weight_baseline_nz],
+                "baseline_l1_scale_stacked": [w13_weight_scale.to(device).contiguous()],
+                "baseline_l2_scale_stacked": [w2_weight_scale.to(device).contiguous()],
+                "baseline_l1_bias_stacked": None,
+                "baseline_l2_bias_stacked": None,
+            }
+        )
 
     fused_l1_weights = [
         torch_npu.npu_format_cast(weight.contiguous().to(device), ACL_FORMAT_FRACTAL_NZ)
-        for weight in source["w13_weight_raw_int8"].unbind(dim=0)
+        for weight in w13_weight_raw_int8.unbind(dim=0)
     ]
     fused_l2_weights = [
         torch_npu.npu_format_cast(weight.contiguous().to(device), ACL_FORMAT_FRACTAL_NZ)
-        for weight in source["w2_weight_raw_int8"].unbind(dim=0)
+        for weight in w2_weight_raw_int8.unbind(dim=0)
     ]
     fused_l1_scales = [
-        scale.to(device).reshape(-1)
-        for scale in source["w13_scale_uint64"].unbind(dim=0)
+        scale.to(device).reshape(-1) for scale in w13_scale_uint64.unbind(dim=0)
     ]
     fused_l2_scales = [
-        scale.to(device).reshape(-1)
-        for scale in source["w2_scale_uint64"].unbind(dim=0)
+        scale.to(device).reshape(-1) for scale in w2_scale_uint64.unbind(dim=0)
     ]
 
     expected_l1_shape = (hidden, 2 * intermediate_hidden)
@@ -612,14 +584,17 @@ def build_w8a8_fused_scene_weights(source: dict, device: torch.device) -> dict:
                 f"got shape={tuple(scale.shape)} dtype={scale.dtype}."
             )
 
-    return {
-        "fused_l1_weights": fused_l1_weights,
-        "fused_l2_weights": fused_l2_weights,
-        "fused_l1_scales": fused_l1_scales,
-        "fused_l2_scales": fused_l2_scales,
-        "fused_l1_bias": None,
-        "fused_l2_bias": None,
-    }
+    weights.update(
+        {
+            "fused_l1_weights": fused_l1_weights,
+            "fused_l2_weights": fused_l2_weights,
+            "fused_l1_scales": fused_l1_scales,
+            "fused_l2_scales": fused_l2_scales,
+            "fused_l1_bias": None,
+            "fused_l2_bias": None,
+        }
+    )
+    return source, weights
 
 
 def get_a5_quant_dtype(quant_mode: str):
@@ -655,28 +630,6 @@ def get_a5_weight_scenes(args: argparse.Namespace) -> list[tuple[str, str]]:
             raise ValueError(f"{args.quant_mode} does not support {args.weight_format}")
         formats = (args.weight_format,)
     return list(product(layouts, formats))
-
-
-def build_a5_case_matrix(args: argparse.Namespace, rank: int) -> list[dict]:
-    routing_dtypes = (
-        ("bf16", "fp32") if args.routing_dtype == "all" else (args.routing_dtype,)
-    )
-    token_lengths = (
-        (args.num_tokens,)
-        if args.enable_performance
-        else (args.num_tokens, max(1, args.num_tokens // 2))
-    )
-    token_jitter = 0 if args.enable_performance else A5_ACCURACY_TOKEN_JITTER
-    return [
-        dict(
-            case,
-            routing_dtype=dtype,
-            num_tokens=tokens + rank * token_jitter,
-        )
-        for case, dtype, tokens in product(
-            build_case_matrix(args), routing_dtypes, token_lengths
-        )
-    ]
 
 
 def prepare_a5_scene_weights(
@@ -765,106 +718,35 @@ def prepare_scene_weights(
     # Generate all source weights and scales on CPU. For W4A8 in particular,
     # doing the packing/compensation calculations on NPU produces avoidable
     # precision differences between the small-op and fused paths.
-    if quant_mode == "w4a8":
-        source = build_scene_weight_source(
-            hidden,
-            intermediate_hidden,
-            num_local_experts,
-            torch.device("cpu"),
-        )
-        baseline_weights = (
-            build_baseline_scene_weights(source, device) if include_baseline else {}
-        )
-        fused_weights = build_fused_scene_weights(source, device)
-    else:
-        source = build_w8a8_scene_weight_source(
-            hidden,
-            intermediate_hidden,
-            num_local_experts,
-            torch.device("cpu"),
-        )
-        baseline_weights = (
-            build_w8a8_baseline_scene_weights(source, device)
-            if include_baseline
-            else {}
-        )
-        fused_weights = build_w8a8_fused_scene_weights(source, device)
+    prepare_weights = (
+        prepare_w4a8_weights if quant_mode == "w4a8" else prepare_w8a8_weights
+    )
+    source, weights = prepare_weights(
+        hidden,
+        intermediate_hidden,
+        num_local_experts,
+        device,
+        include_baseline,
+    )
 
     print(
-        f"[build_fused_scene_weights][source] quant_mode={quant_mode} | "
+        f"[prepare_scene_weights][source] quant_mode={quant_mode} | "
         + " | ".join(
             f"{key}={summarize_value(value)}" for key, value in source.items()
         ),
         flush=True,
     )
-    weights = {
-        **baseline_weights,
-        **fused_weights,
-        "quant_mode": quant_mode,
-        # Both w4a8 and w8a8 keep the dispatch path quantized to int8
-        # (COMM_QUANT_MODE_INT8); the deep_ep API expresses this via quant_mode=1.
-        "api_quant_mode": 1,
-    }
+    weights.update(
+        {
+            "quant_mode": quant_mode,
+            # Both w4a8 and w8a8 keep the dispatch path quantized to int8
+            # (COMM_QUANT_MODE_INT8); the deep_ep API expresses this via quant_mode=1.
+            "api_quant_mode": 1,
+        }
+    )
     if include_baseline:
         weights["source"] = source
     return weights
-
-
-def run_grouped_matmul_w4a8(
-    x_int8: torch.Tensor,
-    per_token_scale: torch.Tensor,
-    group_list: torch.Tensor,
-    group_list_type: int,
-    weight: List[torch.Tensor],
-    scale: List[torch.Tensor],
-    bias,
-    rank: int,
-    stage_name: str,
-    barrier_group: dist.ProcessGroup,
-) -> torch.Tensor:
-    bias_list = bias if isinstance(bias, list) else [bias]
-    out = torch_npu.npu_grouped_matmul(
-        x=[x_int8],
-        weight=weight,
-        scale=[scale[0].to(scale[0].dtype)],
-        bias=bias_list,
-        per_token_scale=[per_token_scale],
-        split_item=2,
-        group_list_type=group_list_type,
-        group_type=0,
-        group_list=group_list,
-        output_dtype=torch.bfloat16,
-    )[0]
-    return out
-
-
-def run_grouped_matmul_w8a8(
-    x_int8: torch.Tensor,
-    per_token_scale: torch.Tensor,
-    group_list: torch.Tensor,
-    group_list_type: int,
-    weight: List[torch.Tensor],
-    scale: List[torch.Tensor],
-) -> torch.Tensor:
-    expert_scales = scale[0]
-    if expert_scales.dim() == 3 and expert_scales.size(1) == 1:
-        expert_scales = expert_scales.squeeze(1)
-    if expert_scales.dim() != 2:
-        raise ValueError(
-            "W8A8 baseline weight scale must have shape [experts, output], "
-            f"got {tuple(expert_scales.shape)}."
-        )
-    return torch_npu.npu_grouped_matmul(
-        x=[x_int8],
-        weight=weight,
-        scale=[expert_scales.to(torch.bfloat16)],
-        per_token_scale=[per_token_scale],
-        split_item=2,
-        group_list_type=group_list_type,
-        group_type=0,
-        group_list=group_list,
-        output_dtype=torch.bfloat16,
-    )[0]
 
 
 def run_grouped_matmul_quantized(
@@ -876,35 +758,35 @@ def run_grouped_matmul_quantized(
     weight: List[torch.Tensor],
     scale: List[torch.Tensor],
     bias,
-    rank: int,
-    stage_name: str,
-    barrier_group: dist.ProcessGroup,
 ) -> torch.Tensor:
+    kwargs = {
+        "x": [x_int8],
+        "weight": weight,
+        "per_token_scale": [per_token_scale],
+        "split_item": 2,
+        "group_list_type": group_list_type,
+        "group_type": 0,
+        "group_list": group_list,
+        "output_dtype": torch.bfloat16,
+    }
     if quant_mode == "w4a8":
-        return run_grouped_matmul_w4a8(
-            x_int8,
-            per_token_scale,
-            group_list,
-            group_list_type,
-            weight,
-            scale,
-            bias,
-            rank,
-            stage_name,
-            barrier_group,
-        )
-    if quant_mode == "w8a8":
+        kwargs["scale"] = [scale[0].to(scale[0].dtype)]
+        kwargs["bias"] = bias if isinstance(bias, list) else [bias]
+    elif quant_mode == "w8a8":
         if bias is not None:
             raise ValueError("W8A8 baseline must not receive W4 compensation bias.")
-        return run_grouped_matmul_w8a8(
-            x_int8,
-            per_token_scale,
-            group_list,
-            group_list_type,
-            weight,
-            scale,
-        )
-    raise ValueError(f"Unsupported quant_mode={quant_mode!r}.")
+        expert_scales = scale[0]
+        if expert_scales.dim() == 3 and expert_scales.size(1) == 1:
+            expert_scales = expert_scales.squeeze(1)
+        if expert_scales.dim() != 2:
+            raise ValueError(
+                "W8A8 baseline weight scale must have shape [experts, output], "
+                f"got {tuple(expert_scales.shape)}."
+            )
+        kwargs["scale"] = [expert_scales.to(torch.bfloat16)]
+    else:
+        raise ValueError(f"Unsupported quant_mode={quant_mode!r}.")
+    return torch_npu.npu_grouped_matmul(**kwargs)[0]
 
 
 def run_mc2_dispatch(
@@ -1070,9 +952,6 @@ def run_baseline_reference(
         weights["baseline_l1_weight_stacked"],
         weights["baseline_l1_scale_stacked"],
         weights["baseline_l1_bias_stacked"],
-        ep_rank_id,
-        "gmm1",
-        barrier_group,
     )
     act_out = apply_activation(
         gate_up,
@@ -1090,9 +969,6 @@ def run_baseline_reference(
         weights["baseline_l2_weight_stacked"],
         weights["baseline_l2_scale_stacked"],
         weights["baseline_l2_bias_stacked"],
-        ep_rank_id,
-        "gmm2",
-        barrier_group,
     )
     combined_x = run_mc2_combine(
         down,
@@ -1388,7 +1264,7 @@ def run_fused_reference(
     return out
 
 
-def build_case_matrix(args: argparse.Namespace) -> list[dict]:
+def build_case_matrix(args: argparse.Namespace, rank: int) -> list[dict]:
     activations = parse_csv_list(args.activation)
     betas = parse_float_list(args.beta)
     linear_betas = parse_optional_float_list(args.linear_beta)
@@ -1415,10 +1291,38 @@ def build_case_matrix(args: argparse.Namespace) -> list[dict]:
                         "linear_beta": linear_beta,
                     }
                 )
-    return cases
+    if args.quant_mode not in A5_QUANT_MODES:
+        return cases
+
+    routing_dtypes = (
+        ("bf16", "fp32") if args.routing_dtype == "all" else (args.routing_dtype,)
+    )
+    token_lengths = (
+        (args.num_tokens,)
+        if args.enable_performance
+        else (args.num_tokens, max(1, args.num_tokens // 2))
+    )
+    token_jitter = 0 if args.enable_performance else A5_ACCURACY_TOKEN_JITTER
+    return [
+        dict(
+            case,
+            routing_dtype=dtype,
+            num_tokens=tokens + rank * token_jitter,
+        )
+        for case, dtype, tokens in product(cases, routing_dtypes, token_lengths)
+    ]
 
 
-def make_case_inputs(args, weights, case, device):
+def prepare_case(
+    args: argparse.Namespace,
+    weights: dict,
+    case: dict,
+) -> dict:
+    device = torch.device(f"npu:{torch.npu.current_device()}")
+    torch.manual_seed(args.seed)
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+
     num_tokens = case.get("num_tokens", args.num_tokens)
     x = torch.randn((num_tokens, args.hidden), dtype=torch.bfloat16, device=device)
     # The A5 op documents int64 expert ids; cover both int32 (bf16 routing)
@@ -1434,30 +1338,15 @@ def make_case_inputs(args, weights, case, device):
     if args.quant_mode in A5_QUANT_MODES:
         dtype = torch.bfloat16 if case["routing_dtype"] == "bf16" else torch.float32
         topk_weights = torch.softmax(topk_weights, dim=-1).to(dtype)
-        capacity = weights["capacity"]
+        max_num_tokens = weights["capacity"]
     else:
         max_num_tokens = torch.tensor(x.size(0), device=device, dtype=torch.int32)
         dist.all_reduce(max_num_tokens, op=dist.ReduceOp.MAX)
-        capacity = int(max_num_tokens.item())
-    return x, topk_idx, topk_weights, capacity
-
-
-def prepare_performance_case(
-    args: argparse.Namespace,
-    weights: dict,
-    case: dict,
-) -> dict:
-    device = torch.device(f"npu:{torch.npu.current_device()}")
-    torch.manual_seed(args.seed)
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-
-    x, topk_idx, topk_weights, max_num_tokens = make_case_inputs(
-        args, weights, case, device
-    )
+        max_num_tokens = int(max_num_tokens.item())
 
     return {
         "case": case,
+        "device": device,
         "x": x,
         "topk_idx": topk_idx,
         "topk_weights": topk_weights,
@@ -1480,16 +1369,11 @@ def launch_case(
     mega_group: dist.ProcessGroup,
     enable_dispatch_v2: bool,
 ):
-    device = torch.device(f"npu:{torch.npu.current_device()}")
-    num_local_experts = args.num_experts // num_ranks
-
-    torch.manual_seed(args.seed)
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-
-    x, topk_idx, topk_weights, max_num_tokens = make_case_inputs(
-        args, weights, case, device
-    )
+    prepared_case = prepare_case(args, weights, case)
+    x = prepared_case["x"]
+    topk_idx = prepared_case["topk_idx"]
+    topk_weights = prepared_case["topk_weights"]
+    max_num_tokens = prepared_case["max_num_tokens"]
     if args.quant_mode in A5_QUANT_MODES:
         baseline_out, baseline_counts = run_a5_reference(
             x, topk_idx, topk_weights, weights, case
@@ -1562,16 +1446,10 @@ def launch_case(
     )
 
     return {
-        "case": case,
+        **prepared_case,
         "iteration": iteration,
         "case_index": case_index,
-        "device": device,
-        "max_num_tokens": max_num_tokens,
-        "num_local_experts": num_local_experts,
-        "x": x,
-        "topk_idx": topk_idx,
-        "topk_weights": topk_weights,
-        "weights": weights,
+        "num_local_experts": args.num_experts // num_ranks,
         "baseline_out": baseline_out,
         "baseline_counts": baseline_counts,
         "fused_out": fused_out,
@@ -1721,9 +1599,7 @@ def run_test_cases(
     iterations = args.performance_iters if args.enable_performance else 1
     if args.enable_performance:
         if args.performance_only:
-            launched_cases = [
-                prepare_performance_case(args, weights, case) for case in cases
-            ]
+            launched_cases = [prepare_case(args, weights, case) for case in cases]
             # Warm up MegaMoe and initialize its symmetric buffer outside profiling.
             for launched_case in launched_cases:
                 case = launched_case["case"]
@@ -1900,7 +1776,7 @@ def run_a5_scenes(
                 "--weight-layout stacked --weight-format ND"
             )
     scenes = get_a5_weight_scenes(args)
-    cases = build_a5_case_matrix(args, rank)
+    cases = build_case_matrix(args, rank)
     token_jitter = 0 if args.enable_performance else A5_ACCURACY_TOKEN_JITTER
     capacity = args.num_tokens + (num_ranks - 1) * token_jitter
     dtype = get_a5_quant_dtype(args.quant_mode)
@@ -2011,7 +1887,7 @@ def test_main(
             enable_dispatch_v2,
         )
         return
-    cases = build_case_matrix(args)
+    cases = build_case_matrix(args, rank)
     device = torch.device(f"npu:{torch.npu.current_device()}")
     num_local_experts = args.num_experts // num_ranks
     torch.manual_seed(args.seed + rank)
@@ -2133,6 +2009,13 @@ def build_parser():
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+    parser.set_defaults(
+        seed=2026,
+        num_servers=1,
+        server_index=0,
+        master_addr=None,
+        master_port=None,
+    )
     parser.add_argument(
         "--num-processes",
         type=int,
@@ -2147,30 +2030,6 @@ def build_parser():
             "Number of local ranks spawned on the current server. Defaults to "
             "--num-processes and must match it for this launcher."
         ),
-    )
-    parser.add_argument(
-        "--num-servers",
-        type=int,
-        default=1,
-        help="Total number of servers participating in distributed execution.",
-    )
-    parser.add_argument(
-        "--server-index",
-        type=int,
-        default=0,
-        help="Zero-based index of the current server.",
-    )
-    parser.add_argument(
-        "--master-addr",
-        type=str,
-        default=None,
-        help="Set MASTER_ADDR before spawning local worker processes.",
-    )
-    parser.add_argument(
-        "--master-port",
-        type=int,
-        default=None,
-        help="Set MASTER_PORT before spawning local worker processes.",
     )
     parser.add_argument(
         "--hccl-buffsize",
@@ -2232,12 +2091,6 @@ def build_parser():
         type=str,
         default="25.0",
         help="linear beta values used by the situ activation.",
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=2026,
-        help="Random seed used to generate inputs and weights.",
     )
     parser.add_argument(
         "--enable-performance",
@@ -2310,7 +2163,8 @@ if __name__ == "__main__":
             "script starts one local worker per process."
         )
 
-    apply_runtime_env_from_args(args)
+    if args.hccl_buffsize is not None:
+        os.environ["HCCL_BUFFSIZE"] = str(args.hccl_buffsize)
     torch.multiprocessing.spawn(
         test_loop,
         args=(args.num_ranks_per_server, args),
